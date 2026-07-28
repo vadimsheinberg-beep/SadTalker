@@ -91,11 +91,13 @@ prohibitions:
     rule: практическое галахическое постановление
     enforced_by: validators.claim_types
   - id: synthetic_persona
-    rule: сгенерированный ведущий вместо реального человека
+    rule: полностью сгенерированный ведущий вместо реального человека
     enforced_by: validators.presenter_source
+    basis: internal            # НЕ цитата универсального запрета YouTube
   - id: undisclosed_synthesis
-    rule: публикация синтеза без флага altered content и экранной пометки
+    rule: публикация синтеза без раскрытия по требованиям площадки
     enforced_by: validators.disclosure
+    basis: platform_requirement
   - id: templated_mass_production
     rule: шаблонные сценарии с незначительными подстановками
     enforced_by: validators.template_similarity
@@ -125,6 +127,32 @@ thresholds:
   identity_drift_cosine_min: 0.65
   rework_rate_alarm: 0.30
   author_minutes_per_week_alarm: 400
+
+# ─────────────────────── синтетический ведущий ──────────────────────────
+# Разграничение источников нормы. Официальная политика YouTube запрещает
+# монетизацию массового, шаблонного и generic-контента и отдельно ограничивает
+# AI-персон, изображающих экспертов по чувствительным темам (здоровье, финансы,
+# право, политика). Талмудический и религиозный контент в этом перечне не
+# назван. Поэтому запрет на синтетического ведущего ниже — НАША внутренняя
+# норма качества, а не цитата универсального запрета площадки.
+synthetic_presenter:
+  primary_long_form: prohibited_by_internal_policy
+  reason:
+    - trust
+    - audience_authenticity
+    - monetization_risk        # через общее определение массового шаблонного контента
+  youtube_absolute_prohibition: false
+
+# Лип-синк по B-roll автора — это НЕ обход синтеза и не «реальное выступление».
+# Это синтетически изменённое выступление реального автора, разрешённое им самим.
+# Реалистичное изменение движения рта делает вид, будто человек произнёс то,
+# чего не произносил, — площадка требует раскрытия такого материала.
+lip_sync_author_broll:
+  allowed: true
+  requires_author_text_approval: true    # автор утвердил именно этот текст
+  requires_author_video_consent: true    # автор дал согласие на использование B-roll
+  youtube_ai_disclosure: true
+  description_disclosure: true
 
 # ─────────────────────────── раскрытие синтеза ──────────────────────────
 disclosure:

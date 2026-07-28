@@ -163,12 +163,23 @@ def disclosure(meta: dict) -> Verdict:
 
 
 def presenter_source(meta: dict) -> Verdict:
-    """Реальный человек с синтезированной артикуляцией — да. Выдуманный ведущий — нет."""
+    """Лип-синк по B-roll автора — синтетически изменённое выступление реального
+    человека, а не «настоящая запись». Разрешён при трёх условиях сразу:
+    согласие на использование видео, утверждение конкретного текста, раскрытие.
+    Технической лазейки здесь нет и искать её не следует."""
     v = Verdict()
+    rules = policy()["lip_sync_author_broll"]
+
     if meta.get("presenter") != "lipsync_on_author_broll":
         v.fail("synthetic_persona: ведущий не является реальным автором канала")
+        return v
+
     if not meta.get("broll_asset_id"):
         v.fail("synthetic_persona: не указан исходный B-roll автора")
+    if rules["requires_author_video_consent"] and not meta.get("author_video_consent"):
+        v.fail("lip_sync_author_broll: нет согласия автора на использование B-roll")
+    if rules["requires_author_text_approval"] and not meta.get("author_text_approval"):
+        v.fail("lip_sync_author_broll: автор не утвердил произносимый текст")
     return v
 
 

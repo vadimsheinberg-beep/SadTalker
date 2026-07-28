@@ -155,9 +155,18 @@ def main() -> int:
         print("\n6. Запрет synthetic_persona и undisclosed_synthesis")
         check("сгенерированный ведущий блокируется",
               not validators.presenter_source({"presenter": "ai_avatar"}).ok)
-        check("реальный автор с лип-синком проходит",
+        check("лип-синк без согласия автора на B-roll блокируется",
+              not validators.presenter_source(
+                  {"presenter": "lipsync_on_author_broll", "broll_asset_id": "broll-01",
+                   "author_text_approval": True}).ok)
+        check("лип-синк без утверждения текста автором блокируется",
+              not validators.presenter_source(
+                  {"presenter": "lipsync_on_author_broll", "broll_asset_id": "broll-01",
+                   "author_video_consent": True}).ok)
+        check("лип-синк с согласием и утверждением текста проходит",
               validators.presenter_source(
-                  {"presenter": "lipsync_on_author_broll", "broll_asset_id": "broll-01"}).ok)
+                  {"presenter": "lipsync_on_author_broll", "broll_asset_id": "broll-01",
+                   "author_video_consent": True, "author_text_approval": True}).ok)
         check("нераскрытый синтез блокируется", not validators.disclosure({}).ok)
         check("раскрытый синтез проходит",
               validators.disclosure({"altered_content_flag": True, "on_screen_badge": True}).ok)
@@ -174,6 +183,7 @@ def main() -> int:
         short.quotes = [{"ref": "bavli:shabbat:31a:3", "start": 140, "end": 154,
                          "exact_text": REAL_QUOTE}]
         short.qc = {"meta": {"presenter": "lipsync_on_author_broll", "broll_asset_id": "broll-01",
+                             "author_video_consent": True, "author_text_approval": True,
                              "altered_content_flag": True, "on_screen_badge": True}}
         short.stage = ShortStage.scripted
         session.add(short)
