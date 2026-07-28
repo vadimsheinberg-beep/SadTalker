@@ -1,0 +1,54 @@
+# Каналы публикации. Здесь ТОЛЬКО несекретные значения.
+#
+# client_id — публичный по устройству OAuth: он виден в любом URL согласия,
+# поэтому лежит в репозитории. client_secret и refresh_token НЕ хранятся здесь
+# и не коммитятся никогда — они читаются из .env (см. .env.example).
+#
+# Проекты разные (номера 582579689811 и 683834040925), значит квоты не общие:
+# по 10 000 единиц в сутки на каждый. Но и аудит проходить придётся дважды.
+
+channels:
+  ru:
+    name: Tzoar Lab RU
+    client_id: "582579689811-ms072s4ivn0s39ul14uga7klh5j62hu0.apps.googleusercontent.com"
+    client_secret_env: YT_CLIENT_SECRET_RU
+    refresh_token_env: YT_REFRESH_TOKEN_RU
+    language: ru
+    # ── Переключается в true ТОЛЬКО после прохождения аудита Google.
+    # Пока false, videos.insert загружает видео принудительно приватными:
+    # ограничение действует для всех API-проектов, созданных после 28.07.2020.
+    api_project_audited: false
+    # Публикация приватных роликов пачками бессмысленна, поэтому при
+    # api_project_audited: false загрузка по умолчанию запрещена.
+    allow_private_uploads: false
+
+  en:
+    name: Tzoar Lab EN
+    client_id: "683834040925-emehfpsd83tckgn7arhi5sb05ji3l1vd.apps.googleusercontent.com"
+    client_secret_env: YT_CLIENT_SECRET_EN
+    refresh_token_env: YT_REFRESH_TOKEN_EN
+    language: en
+    api_project_audited: false
+    allow_private_uploads: false
+
+oauth:
+  # youtube.upload вместо широкого youtube: меньше поверхность согласия и
+  # заметно проще проходит проверку Google.
+  scopes:
+    - https://www.googleapis.com/auth/youtube.upload
+  # Для аналитики нужен отдельный refresh-token с этим scope — заводить
+  # позже, отдельным согласием, чтобы не утяжелять аудит основного проекта.
+  analytics_scopes:
+    - https://www.googleapis.com/auth/yt-analytics.readonly
+  # Пока экран согласия в статусе Testing, refresh-token живёт 7 суток.
+  # Для еженедельного конвейера это означает еженедельную поломку.
+  consent_screen_must_be: In production
+
+upload_defaults:
+  category_id: "27"          # Education
+  privacy_status: private     # поднимается до public только после аудита и QC
+  made_for_kids: false
+  # Обязательное раскрытие. Поле появилось в API 30.10.2024 и ставится прямо
+  # в videos.insert, поэтому раскрытие полностью автоматизируемо.
+  contains_synthetic_media: true
+  self_declared_made_for_kids: false
