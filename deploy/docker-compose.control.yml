@@ -1,0 +1,106 @@
+# Control plane — разворачивается на Contabo VPS (GPU не требуется).
+# Запуск:  make up   (или docker compose -f docker-compose.control.yml up -d)
+name: tzoar-control
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-tzoar}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+      POSTGRES_DB: ${PG_DB:-tzoar}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-tzoar} -d ${PG_DB:-tzoar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [tzoar]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [tzoar]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [tzoar]
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    restart: unless-stopped
+    volumes:
+      - qdrantdata:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+    networks: [tzoar]
+
+  orchestrator:
+    build: ./orchestrator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${PG_USER:-tzoar}:${PG_PASSWORD}@postgres:5432/${PG_DB:-tzoar}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - ../policy:/app/policy:ro
+      - ./state:/app/state
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [tzoar]
+
+  worker:
+    build: ./orchestrator
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${PG_USER:-tzoar}:${PG_PASSWORD}@postgres:5432/${PG_DB:-tzoar}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      orchestrator: {condition: service_started}
+    volumes:
+      - ../policy:/app/policy:ro
+      - ./state:/app/state
+    networks: [tzoar]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  qdrantdata:
+
+networks:
+  tzoar:

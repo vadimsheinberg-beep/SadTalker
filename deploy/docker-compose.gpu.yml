@@ -1,0 +1,97 @@
+# GPU-нода. Разворачивается ОТДЕЛЬНО от control plane — на Contabo cloud GPU,
+# RunPod, Vast или любом хосте с NVIDIA-драйвером и nvidia-container-toolkit.
+#
+# Оркестратор ходит сюда по HTTP (GPU_NODE_URL). Нода не хранит состояние:
+# всё кладётся в MinIO control plane по S3_ENDPOINT.
+#
+# Перед первым запуском: make models   (скачивает веса на том models/)
+name: tzoar-gpu
+
+x-gpu: &gpu
+  runtime: nvidia
+  environment: &gpuenv
+    NVIDIA_VISIBLE_DEVICES: all
+    S3_ENDPOINT: ${S3_ENDPOINT:?}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?}
+    S3_BUCKET: ${S3_BUCKET:-tzoar-artifacts}
+  restart: unless-stopped
+  networks: [gpu]
+
+services:
+  # ── Лип-синк объёмного контура. MIT, коммерческое использование разрешено.
+  #    ~10–25 с GPU на одноминутный ролик — на два порядка дешевле диффузии.
+  musetalk:
+    <<: *gpu
+    build:
+      context: ./gpu/musetalk
+    environment:
+      <<: *gpuenv
+      MODEL_DIR: /models/musetalk
+      BROLL_DIR: /assets/broll
+    volumes:
+      - models:/models
+      - assets:/assets
+    ports: ["9201:9200"]
+
+  # ── TTS с клонированием голоса автора. Chatterbox — MIT, 23+ языка вкл. RU.
+  #    F5-TTS и XTTS-v2 сюда не ставить: CC-BY-NC и CPML запрещают коммерцию.
+  tts:
+    <<: *gpu
+    build:
+      context: ./gpu/chatterbox
+    environment:
+      <<: *gpuenv
+      MODEL_DIR: /models/chatterbox
+      VOICE_DIR: /assets/voice
+    volumes:
+      - models:/models
+      - assets:/assets
+    ports: ["9202:9200"]
+
+  # ── ASR + выравнивание под субтитры и тайминги карточек.
+  whisperx:
+    <<: *gpu
+    build:
+      context: ./gpu/whisperx
+    environment:
+      <<: *gpuenv
+      MODEL_DIR: /models/whisperx
+      WHISPER_MODEL: large-v3
+    volumes:
+      - models:/models
+    ports: ["9203:9200"]
+
+  # ── Тяжёлый контур: оживление фото и V2V для флагмана. Apache-2.0.
+  #    Запускается по требованию, а не постоянно: profiles: [heavy]
+  infinitetalk:
+    <<: *gpu
+    profiles: ["heavy"]
+    build:
+      context: ./gpu/infinitetalk
+    environment:
+      <<: *gpuenv
+      MODEL_DIR: /models/infinitetalk
+      QUANT: fp8
+    volumes:
+      - models:/models
+      - assets:/assets
+    ports: ["9204:9200"]
+    shm_size: "16gb"
+
+  # ── Маршрутизатор: один вход /tts /lipsync /asr /post для оркестратора.
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./gpu/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports: ["9200:9200"]
+    depends_on: [musetalk, tts, whisperx]
+    networks: [gpu]
+
+volumes:
+  models:
+  assets:
+
+networks:
+  gpu:

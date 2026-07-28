@@ -1,0 +1,21 @@
+# Единая точка входа GPU-ноды. Оркестратор знает один URL, а не четыре.
+:9200 {
+	handle /health {
+		respond "ok" 200
+	}
+	handle /lipsync* {
+		reverse_proxy musetalk:9200
+	}
+	handle /tts* {
+		reverse_proxy tts:9200
+	}
+	handle /asr* {
+		reverse_proxy whisperx:9200
+	}
+	handle /infinitetalk* {
+		reverse_proxy infinitetalk:9200
+	}
+	handle /post* {
+		reverse_proxy musetalk:9200
+	}
+}

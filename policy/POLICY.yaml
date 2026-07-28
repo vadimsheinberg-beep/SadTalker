@@ -1,0 +1,155 @@
+# Политика контент-завода Tzoar Lab. Машиночитаемая — читается валидаторами.
+# Меняется через ревью, как код. Версия входит в манифест каждого выпуска.
+version: 2
+
+# ─────────────────────────── типы утверждений ───────────────────────────
+# Уровень проверки вычисляется из типа утверждения, а не из типа задачи.
+claim_types:
+  formatting:
+    description: субтитры, таймкоды, экспорт, кадрирование
+    author: machine
+    review: automated_test
+    blocks_publication: false
+  technical:
+    description: метрика, поведение модели, результат кластеризации
+    author: machine
+    review: experiment_lock_reproducible
+    blocks_publication: true
+  source:
+    description: цитата или ссылка на корпус
+    author: machine
+    review: exact_span_match
+    blocks_publication: true
+  attribution:
+    description: позиция, приписанная названному лицу или комментатору
+    author: machine_draft
+    review: expert
+    blocks_publication: true
+  historical:
+    description: утверждение об исторических событиях, лицах, датировках
+    author: machine_draft
+    review: expert
+    requires_disclaimer: true
+    blocks_publication: true
+  interpretive:
+    description: что результат означает
+    author: human_only          # машина формулирует вопрос, не ответ
+    review: human_signature
+    blocks_publication: true
+  commercial:
+    description: обещание клиенту о точности, полноте, сроках
+    author: machine_draft
+    review: separate_signature
+    blocks_publication: true
+  halakhic:
+    description: практическое галахическое постановление
+    author: forbidden           # формат запрещён целиком
+    review: hard_block
+    blocks_publication: true
+
+# ─────────────────────────── контуры производства ───────────────────────
+tracks:
+  flagship:
+    cadence: weekly
+    duration_min: [10, 15]
+    presenter: live_recording      # живая запись, аватар запрещён
+    gates: [commit, script, publish]
+    may_create_claims: true
+  volume:
+    cadence: daily
+    per_day_per_channel: 5
+    duration_sec: [45, 90]
+    presenter: lipsync_on_author_broll   # реальный человек, синтез артикуляции
+    gates: [inventory, sample]
+    may_create_claims: false       # ключевое ограничение контура
+    sample_review_rate: 0.15
+    sample_review_first_n: 20      # первые N роликов — 100% контроль
+
+# ─────────────────────────── человеческие шлюзы ─────────────────────────
+gates:
+  commit:   {approves: [research, thesis, sources], budget_min: 45}
+  script:   {approves: [script, personal_position], budget_min: 45}
+  publish:  {approves: [final_master], budget_min: 25}
+  inventory: {approves: [atlas_entry], budget_min: 12, target_per_week: 9}
+  sample:   {approves: [sampled_shorts], budget_min: 30}
+  expert:   {trigger: "claim.type in [attribution, historical] or risk == high"}
+  b2b:      {approves: [commercial_claims], off_critical_path: true}
+
+# ─────────────────────────── запреты + точки принуждения ────────────────
+# Запрет без исполнителя не существует. enforced_by указывает на проверку в коде.
+prohibitions:
+  - id: fabricated_quote
+    rule: цитата, отсутствующая в снимке корпуса
+    enforced_by: validators.quote_spans
+  - id: false_attribution
+    rule: позиция, приписанная лицу, у которого её нет в переданном тексте
+    enforced_by: validators.attribution_supported
+  - id: unverified_claim_in_volume
+    rule: объёмный контур использует claim без статуса verified
+    enforced_by: validators.claims_verified
+  - id: halakhic_ruling
+    rule: практическое галахическое постановление
+    enforced_by: validators.claim_types
+  - id: synthetic_persona
+    rule: сгенерированный ведущий вместо реального человека
+    enforced_by: validators.presenter_source
+  - id: undisclosed_synthesis
+    rule: публикация синтеза без флага altered content и экранной пометки
+    enforced_by: validators.disclosure
+  - id: templated_mass_production
+    rule: шаблонные сценарии с незначительными подстановками
+    enforced_by: validators.template_similarity
+  - id: hidden_model_error
+    rule: пустые поля limitations или what_failed
+    enforced_by: validators.limitations_present
+  - id: literal_translation
+    rule: EN-версия как дословный перевод RU
+    enforced_by: validators.localization_divergence
+  - id: auto_reply_sensitive
+    rule: автоответ на чувствительный комментарий
+    enforced_by: validators.comment_routing
+  - id: religious_authority_framing
+    rule: подача проекта как источника религиозного авторитета
+    enforced_by: gates.expert
+
+# ─────────────────────────── пороги валидаторов ─────────────────────────
+thresholds:
+  template_similarity_cosine_max: 0.82   # против inauthentic content policy YouTube
+  template_shared_5gram_max: 0.25
+  same_hook_type_streak_max: 2
+  atlas_entry_cooldown_days: 21
+  script_words_per_minute: [130, 155]
+  lipsync_confidence_min: 6.0
+  loudness_lufs: -16
+  loudness_tolerance: 1.0
+  identity_drift_cosine_min: 0.65
+  rework_rate_alarm: 0.30
+  author_minutes_per_week_alarm: 400
+
+# ─────────────────────────── раскрытие синтеза ──────────────────────────
+disclosure:
+  youtube_altered_content_flag: true
+  on_screen_badge_required: true
+  on_screen_badge_text:
+    ru: "Синтез речи · сценарий проверен человеком"
+    en: "Synthesized speech · human-reviewed script"
+  description_line:
+    ru: "Артикуляция и голос синтезированы. Сценарий и источники проверены автором."
+    en: "Lip motion and voice are synthesized. Script and sources reviewed by the author."
+
+# ─────────────────────────── лицензионные ограничения ───────────────────
+# Компоненты, запрещённые к использованию в коммерческом контуре.
+license_blocklist:
+  - {name: Wav2Lip, reason: research-only}
+  - {name: XTTS-v2, reason: CPML non-commercial}
+  - {name: F5-TTS, reason: CC-BY-NC-4.0}
+  - {name: CodeFormer, reason: S-Lab non-commercial}
+  - {name: InsightFace-models, reason: non-commercial model weights}
+license_allowlist:
+  - {name: MuseTalk, license: MIT}
+  - {name: LatentSync, license: Apache-2.0/OpenRAIL}
+  - {name: InfiniteTalk, license: Apache-2.0}
+  - {name: Chatterbox, license: MIT}
+  - {name: WhisperX, license: BSD}
+  - {name: GFPGAN, license: Apache-2.0}
+  - {name: Real-ESRGAN, license: BSD-3}

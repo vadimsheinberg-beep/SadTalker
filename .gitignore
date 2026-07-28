@@ -172,3 +172,6 @@ checkpoints
 
 # Mac
 .DS_Store
+deploy/.env
+deploy/state/
+deploy/*.db
