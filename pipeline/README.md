@@ -186,7 +186,7 @@ credential values** — `config.py` knows only paths and variable names.
 |---|---|
 | `/opt/tzoar/deploy/.env` | control plane |
 | `/opt/tzoar/deploy/.env.ytdata` | `YT_DATA_API_KEY_1`, `YT_DATA_API_KEY_2` |
-| `/opt/tzoar/deploy/.env.youtube-analytics` | own-channel analytics |
+| `/opt/tzoar/deploy/.env.youtube-analytics` | `YT_ANALYTICS_CLIENT_ID`, `YT_ANALYTICS_CLIENT_SECRET`, `YT_ANALYTICS_REFRESH_TOKEN_RU`, `YT_ANALYTICS_REFRESH_TOKEN_EN` |
 | `/opt/tzoar/deploy/secrets/claude.env` | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` |
 | `/opt/tzoar/deploy/secrets/telegram.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 | `/opt/tzoar/deploy/secrets/elevenlabs.env` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_RU`, `ELEVENLABS_VOICE_ID_EN` |
@@ -202,9 +202,29 @@ Also needed on the server:
   is used, which works but does less font shaping.
 - `ffmpeg` / `ffprobe` — narration concatenation, muxing, and measuring beat
   durations.
-- The channel registry: one YouTube channel id per line at
-  `$TZOAR_WORKDIR/channels.txt`. Kept as a file so the watch list is reviewed
-  and versioned rather than edited inline.
+- The channel registry at `$TZOAR_WORKDIR/channels.txt` — see below. Start from
+  `pipeline/data/channels.example.txt`.
+
+### Two different sets of channels
+
+Confusing these breaks the scout quietly rather than loudly:
+
+| | what it is | where it lives |
+|---|---|---|
+| **Watch list** | channels the scout **reads** to find topics — other people's | `channels.txt` |
+| **Publication targets** | TAMHA + Iahalom, where we **publish** | `contracts.Channel` |
+
+Our own two channels must **not** appear in the watch list — the scout would
+rank our own back catalogue as this week's trends. Their own numbers come from
+`scout/youtube_analytics.py`, which needs OAuth rather than an API key because
+the Analytics API only exposes a channel's data to its owner.
+
+The registry accepts whatever form is convenient to paste — `@handle`, a full
+URL, or a raw `UC…` id — because a handle is what a human actually has when
+looking at a channel page. Handles resolve via `channels.forHandle` (1 quota
+unit against `search`'s 100) and are cached in `channels.resolved.json`. A
+handle that fails to resolve is reported and skipped: one dead channel should
+not stop the scout reading the other twenty.
 
 Run the tests with no network and no GPU:
 
@@ -225,17 +245,27 @@ MuseTalk is wanted for lip-sync quality, the ambiguity should be resolved in
 writing first — `avatar.AvatarEngine` is a protocol precisely so that decision
 can be made later without touching callers.
 
-**Voice and likeness.** Before any avatar ships: written consent covering
-commercial RU/EN use and synthetic generation, ~30 min of clean WAV (15–20 RU,
-10–15 EN) including tractate names and Hebrew/Aramaic terms, and 15–20 min of
-1080p/25fps locked-off green-screen footage. The pronunciation lexicon
-(`tts_elevenlabs.Lexicon`) is ready to receive the term list — it is whole-word
-and case-insensitive, so `Bava` in `Bava Metzia` is corrected while `Bavarian`
-is untouched.
+**Voice and likeness.** Permission granted; the signable record is at
+`docs/consent-voice-likeness.md` and the recording specs at
+`docs/recording-and-brand.md`. Still needed: the recordings themselves, and the
+ElevenLabs voice ids on the server once the voices exist.
+
+Starter pronunciation lexicons ship at `data/lexicon_{ru,en}.json` — 37 Bavli
+tractates plus common terms, loaded per language by `Lexicon.for_language()`.
+**They are unverified guesses** and need checking against real voice output.
+RU values are Cyrillic respellings and EN values are hyphenated syllables,
+because the Russian voice reads Cyrillic far more reliably than transliterated
+Latin.
+
+One calibration is outstanding: `pacing.estimate_beat_duration()` assumes
+Russian runs 8% slower than English at equal word counts. That is a working
+figure, not a measured one — correct it against real ElevenLabs output.
 
 **Brand.** `deck.THEME` is placeholder tokens. Real TAMHA/Yahalom palette,
 typefaces, intro card, end CTA and description template drop in there; nothing
-else in the module hard-codes appearance.
+else in the module hard-codes appearance. Note that fonts must be installed on
+the server or rsvg substitutes silently, and that `gate.ALLOWED_LINK_HOSTS`
+must be extended before any new link domain passes the gate.
 
 **Server permissions.** The environment classifier blocks `docker compose up`,
 `systemctl`, and running scripts over SSH, while file reads and writes pass.

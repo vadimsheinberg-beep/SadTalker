@@ -27,7 +27,7 @@ from .atlas.rag_client import RagClient
 from .config import SETTINGS
 from .contracts import Channel, Package, PublicationBlocked
 from .publish.gate import BlockList, build_description, check_package
-from .scout import trend_scout
+from .scout import registry, trend_scout
 from .scout.youtube_data import YouTubeDataClient
 from .script.beluga import build as build_script
 
@@ -37,22 +37,28 @@ def _store(args: argparse.Namespace) -> inventory.JsonInventoryStore:
 
 
 def _channels(args: argparse.Namespace) -> list[str]:
-    """Channel registry: the ids the scout watches.
+    """Resolve the watch list to channel ids.
 
-    Read from a file so the watch list is reviewed and versioned rather than
-    edited inline by whoever runs the command.
+    The file may hold handles, URLs, or raw ids; handles are resolved once and
+    cached beside it. These are the channels the scout *reads* -- never TAMHA
+    or Iahalom, which are where we publish.
     """
     path = Path(args.registry)
-    if not path.exists():
-        raise SystemExit(
-            f"channel registry not found at {path}. It should hold one YouTube "
-            "channel id per line."
-        )
-    return [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
+    try:
+        entries = registry.load(path)
+    except registry.RegistryError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    channel_ids, problems = registry.resolve(
+        entries,
+        YouTubeDataClient(),
+        registry.HandleCache(path.with_suffix(".resolved.json")),
+    )
+    for problem in problems:
+        print(f"  registry: {problem}", file=sys.stderr)
+    if not channel_ids:
+        raise SystemExit(f"no usable channels in {path}")
+    return channel_ids
 
 
 def cmd_scout(args: argparse.Namespace) -> int:
@@ -242,7 +248,11 @@ def cmd_render(args: argparse.Namespace) -> int:
     outdir = Path(args.out or SETTINGS.workdir / package.package_id)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    lexicon = Lexicon.load(Path(args.lexicon)) if args.lexicon else Lexicon()
+    lexicon = (
+        Lexicon.load(Path(args.lexicon))
+        if args.lexicon
+        else Lexicon.for_language(package.script.language)
+    )
     utterances = narrate(package.script, outdir / "audio", lexicon=lexicon)
     slides = write_deck(
         build_slides(

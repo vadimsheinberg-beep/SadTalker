@@ -51,8 +51,17 @@ class Lexicon:
     """
 
     def __init__(self, mapping: dict[str, str] | None = None) -> None:
-        self._mapping = dict(mapping or {})
+        # Keys beginning with "_" are file annotations, not terms. Without this
+        # the "_comment" documenting each lexicon becomes a substitution rule.
+        self._mapping = {
+            key: value
+            for key, value in (mapping or {}).items()
+            if not key.startswith("_")
+        }
         self._pattern = self._compile()
+
+    def __len__(self) -> int:
+        return len(self._mapping)
 
     def _compile(self) -> re.Pattern[str] | None:
         if not self._mapping:
@@ -67,6 +76,18 @@ class Lexicon:
             return cls()
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(raw if isinstance(raw, dict) else raw.get("terms", {}))
+
+    @classmethod
+    def for_language(cls, language: Language) -> "Lexicon":
+        """Load the shipped lexicon for a language.
+
+        RU and EN need genuinely different files, not one shared table: the
+        Russian voice reads Cyrillic respellings far more reliably than Latin
+        ones, so the same tractate is spelled differently per voice.
+        """
+        return cls.load(
+            Path(__file__).resolve().parents[1] / "data" / f"lexicon_{language.value}.json"
+        )
 
     def apply(self, text: str) -> str:
         if self._pattern is None:

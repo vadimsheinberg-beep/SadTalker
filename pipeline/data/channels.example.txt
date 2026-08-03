@@ -1,0 +1,40 @@
+# Watch list for the trend scout.
+#
+# These are channels the scout READS to learn what YouTube is currently
+# promoting in the corporate-collapse domain. Nothing is ever published to
+# them.
+#
+# Do NOT put TAMHA (@tamha4) or Iahalom (@Tamha2) in this file. Those are
+# publication targets, not trend sources -- listing them here would make the
+# scout rank our own back catalogue as this week's trends. Their own numbers
+# come from pipeline/scout/youtube_analytics.py instead.
+#
+# One channel per line. Any of these forms works:
+#     @handle
+#     https://www.youtube.com/@handle
+#     https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx
+#     UCxxxxxxxxxxxxxxxxxxxxxx
+# Text after "#" is a note. Handles are resolved to channel ids once and
+# cached beside this file as channels.resolved.json.
+#
+# Copy to $TZOAR_WORKDIR/channels.txt and edit.
+#
+# ---------------------------------------------------------------------------
+# The handles below are SUGGESTIONS from the corporate-collapse genre and have
+# not been verified against the API. Any that do not resolve are reported and
+# skipped, not fatal -- run `python -m pipeline scout` and check stderr, then
+# correct or delete the lines that failed.
+# ---------------------------------------------------------------------------
+
+@CompanyMan                # business failures, case-study format
+@MagnatesMedia             # long-form corporate downfall stories
+@ColdFusion                # tech company rise-and-fall
+@Coffeezilla               # fraud investigations
+@HowMoneyWorks             # finance explainers, frequent collapse topics
+@ModernMBA                 # corporate strategy post-mortems
+@BrightSunFilms            # abandoned/defunct businesses
+@FernTV                    # business and aviation failures
+
+# Add RU-language channels here as well -- the scout is bilingual and the
+# domain vocabulary in trend_scout.DOMAIN_PROFILES covers RU and EN. A trend
+# that shows up on both sides is the strongest signal available.

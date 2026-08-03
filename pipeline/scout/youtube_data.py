@@ -99,6 +99,20 @@ class YouTubeDataClient:
             f"all {len(self.keys)} Data API keys exhausted on {endpoint}"
         ) from last_error
 
+    def channel_id_for_handle(self, handle: str) -> str:
+        """Resolve an ``@handle`` to its ``UC...`` channel id.
+
+        ``forHandle`` costs 1 quota unit against ``search``'s 100, so handles in
+        the registry are cheap as long as the result is cached.
+        """
+        payload = self._call(
+            "channels", part="id", forHandle=handle.lstrip("@")
+        )
+        items = payload.get("items") or []
+        if not items:
+            raise QuotaExhausted(f"no channel found for handle {handle}")
+        return str(items[0].get("id", ""))
+
     def recent_uploads(
         self, channel_id: str, lookback_hours: int, max_results: int = 50
     ) -> list[str]:

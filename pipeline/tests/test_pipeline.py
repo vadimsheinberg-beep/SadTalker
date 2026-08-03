@@ -35,7 +35,7 @@ from pipeline.render.deck import build_slides, slide_svg, wrap
 from pipeline.render.tts_elevenlabs import Lexicon
 from pipeline.script import pacing
 from pipeline.script.beluga import ScriptGenerationFailed, assemble, verify_claim_intact
-from pipeline.scout import trend_scout
+from pipeline.scout import registry, trend_scout, youtube_analytics
 from pipeline.scout.youtube_data import parse_iso8601_duration, parse_rfc3339
 
 
@@ -975,6 +975,150 @@ class PngToolsTests(unittest.TestCase):
             path.write_bytes(b"not a png at all")
             with self.assertRaises(PngError):
                 read_png(path)
+
+
+class RegistryTests(unittest.TestCase):
+    def test_raw_channel_id_needs_no_resolution(self):
+        entry = registry.parse_entry("UC" + "a" * 22)
+        self.assertTrue(entry.resolved)
+        self.assertEqual(entry.channel_id, "UC" + "a" * 22)
+
+    def test_bare_handle_is_recognised(self):
+        entry = registry.parse_entry("@tamha4")
+        self.assertEqual(entry.handle, "@tamha4")
+        self.assertFalse(entry.resolved)
+
+    def test_handle_url_is_recognised(self):
+        entry = registry.parse_entry("https://www.youtube.com/@Tamha2")
+        self.assertEqual(entry.handle, "@Tamha2")
+
+    def test_channel_url_yields_the_id_without_an_api_call(self):
+        channel_id = "UC" + "b" * 22
+        entries = registry.parse_registry(
+            f"https://www.youtube.com/channel/{channel_id}"
+        )
+        self.assertEqual(entries[0].channel_id, channel_id)
+        self.assertTrue(entries[0].resolved)
+
+    def test_comments_and_blanks_are_skipped(self):
+        entries = registry.parse_registry("# heading\n\n@one\n@two  # trailing note")
+        self.assertEqual([e.handle for e in entries], ["@one", "@two"])
+        self.assertEqual(entries[1].note, "trailing note")
+
+    def test_unparseable_line_is_rejected_loudly(self):
+        with self.assertRaises(registry.RegistryError):
+            registry.parse_entry("just some prose")
+
+    def test_resolution_uses_cache_and_dedupes(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def channel_id_for_handle(self, handle):
+                self.calls += 1
+                return "UC" + handle.lstrip("@").ljust(22, "x")[:22]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = registry.HandleCache(Path(tmp) / "cache.json")
+            client = FakeClient()
+            entries = registry.parse_registry("@alpha\n@alpha\n@beta")
+            ids, problems = registry.resolve(entries, client, cache)
+            self.assertEqual(len(ids), 2, ids)
+            self.assertEqual(problems, [])
+            # Second run reads the cache instead of the API.
+            before = client.calls
+            registry.resolve(entries, client, registry.HandleCache(cache.path))
+            self.assertEqual(client.calls, before)
+
+    def test_one_dead_channel_does_not_stop_the_others(self):
+        class FlakyClient:
+            def channel_id_for_handle(self, handle):
+                if handle == "@dead":
+                    raise RuntimeError("no channel found")
+                return "UC" + handle.lstrip("@").ljust(22, "x")[:22]
+
+        entries = registry.parse_registry("@dead\n@alive")
+        ids, problems = registry.resolve(entries, FlakyClient(), None)
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("@dead", problems[0])
+
+
+class AnalyticsTests(unittest.TestCase):
+    PAYLOAD = {
+        "columnHeaders": [
+            {"name": "day", "columnType": "DIMENSION"},
+            {"name": "views", "columnType": "METRIC"},
+            {"name": "averageViewPercentage", "columnType": "METRIC"},
+        ],
+        "rows": [["2026-01-01", 100, 20.0], ["2026-01-02", 900, 40.0]],
+    }
+
+    def test_report_rows_are_named(self):
+        rows = youtube_analytics.parse_report(self.PAYLOAD)
+        self.assertEqual(rows[0].dimensions, ("2026-01-01",))
+        self.assertEqual(rows[1].metrics["views"], 900.0)
+
+    def test_average_is_weighted_by_views(self):
+        summary = youtube_analytics.retention_summary(
+            youtube_analytics.parse_report(self.PAYLOAD)
+        )
+        # An unweighted mean would be 30.0; weighting by views gives 38.
+        self.assertAlmostEqual(summary["averageViewPercentage"], 38.0)
+        self.assertEqual(summary["views"], 1000.0)
+
+    def test_empty_report_is_not_an_error(self):
+        self.assertEqual(youtube_analytics.retention_summary([]), {})
+
+    def test_zero_views_does_not_divide_by_zero(self):
+        rows = youtube_analytics.parse_report(
+            {
+                "columnHeaders": self.PAYLOAD["columnHeaders"],
+                "rows": [["2026-01-01", 0, 0.0]],
+            }
+        )
+        self.assertEqual(youtube_analytics.retention_summary(rows)["averageViewPercentage"], 0.0)
+
+    def test_analytics_window_ends_before_today(self):
+        from datetime import date
+
+        start, end = youtube_analytics.recent_window(28)
+        self.assertLess(end, date.today())
+        self.assertEqual((end - start).days, 28)
+
+
+class ShippedLexiconTests(unittest.TestCase):
+    def test_both_languages_ship_a_lexicon(self):
+        for language in (Language.RU, Language.EN):
+            self.assertGreater(len(Lexicon.for_language(language)), 40)
+
+    def test_comment_keys_are_not_substitution_rules(self):
+        self.assertEqual(Lexicon({"_comment": "x", "a": "b"}).apply("_comment"), "_comment")
+
+    def test_russian_lexicon_renders_tractates_in_cyrillic(self):
+        rendered = Lexicon.for_language(Language.RU).apply("Chagigah")
+        self.assertTrue(
+            all(char.isalpha() is False or "Ѐ" <= char <= "ӿ" or char in "́"
+                for char in rendered),
+            f"expected Cyrillic, got {rendered!r}",
+        )
+
+    def test_multiword_terms_are_replaced(self):
+        self.assertNotIn(
+            "Metzia", Lexicon.for_language(Language.EN).apply("Bava Metzia")
+        )
+
+    def test_both_lexicons_cover_the_same_tractates(self):
+        import json as _json
+        from pathlib import Path as _Path
+
+        base = _Path("pipeline/data")
+        ru = _json.loads((base / "lexicon_ru.json").read_text(encoding="utf-8"))
+        en = _json.loads((base / "lexicon_en.json").read_text(encoding="utf-8"))
+        ru_keys = {k for k in ru if not k.startswith("_")}
+        en_keys = {k for k in en if not k.startswith("_")}
+        # RU carries one extra Cyrillic alias for the channel name.
+        self.assertEqual(en_keys - ru_keys, set())
 
 
 class RasterizeIntegrationTests(unittest.TestCase):
