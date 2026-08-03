@@ -15,26 +15,38 @@
 #     https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx
 #     UCxxxxxxxxxxxxxxxxxxxxxx
 # Text after "#" is a note. Handles are resolved to channel ids once and
-# cached beside this file as channels.resolved.json.
+# cached beside this file as channels.resolved.json; raw UC ids skip
+# resolution entirely, costing no quota and unable to resolve to the wrong
+# channel. That is why the confirmed entries below are written as ids.
 #
 # Copy to $TZOAR_WORKDIR/channels.txt and edit.
+
+# --- EN, confirmed against public channel pages -----------------------------
+# Each id was cross-checked against the channel's youtube.com/channel/ URL.
+# Verify once with `python -m pipeline scout` before trusting the ranking.
+
+UCQMyhrt92_8XM0KgZH6VnRg   # Company Man (@companyman114) — company declines, retail collapse
+UCE4Gn00XZbpWvGUfIslT-tA   # MagnatesMedia — long-form business downfall documentaries
+UC4QZ_LsYcvcq7qOsOhpAX4A   # ColdFusion — tech company rise and fall
+UCFQMnBA3CS502aghlcr0_aw   # Coffeezilla — fraud and scam investigations
+UCkCGANrihzExmu9QiqZpPlQ   # How Money Works — finance explainers, frequent collapse topics
+UCbzVRTkX3bzNZuBd9In4XyA   # Modern MBA — corporate strategy post-mortems
+UC5k3Kc0avyDJ2nG9Kxm9JmQ   # Bright Sun Films — defunct businesses, abandoned projects
+
+# --- EN, handle only: id not confirmed, will resolve at runtime -------------
+@FernTV                    # Fern — corporate scandals, dark business, engineering failure
+@CollapseCo                # TheCollapseCo — business collapse investigations
+
+# --- RU: to be filled in by the operator ------------------------------------
+# Searching turned up plenty of individual RU videos on bankruptcies and
+# corporate collapse, but no stable channel that reliably covers the beat.
+# Picking one off a single viral video would seed the scout with a channel
+# that may never post on the topic again, so nothing is guessed here.
 #
-# ---------------------------------------------------------------------------
-# The handles below are SUGGESTIONS from the corporate-collapse genre and have
-# not been verified against the API. Any that do not resolve are reported and
-# skipped, not fatal -- run `python -m pipeline scout` and check stderr, then
-# correct or delete the lines that failed.
-# ---------------------------------------------------------------------------
-
-@CompanyMan                # business failures, case-study format
-@MagnatesMedia             # long-form corporate downfall stories
-@ColdFusion                # tech company rise-and-fall
-@Coffeezilla               # fraud investigations
-@HowMoneyWorks             # finance explainers, frequent collapse topics
-@ModernMBA                 # corporate strategy post-mortems
-@BrightSunFilms            # abandoned/defunct businesses
-@FernTV                    # business and aviation failures
-
-# Add RU-language channels here as well -- the scout is bilingual and the
-# domain vocabulary in trend_scout.DOMAIN_PROFILES covers RU and EN. A trend
-# that shows up on both sides is the strongest signal available.
+# This matters more than it looks: the strongest possible signal is a topic
+# trending on BOTH language sides at once, and with no RU channels the scout
+# can never see it. trend_scout.DOMAIN_PROFILES already carries the Russian
+# domain vocabulary, so RU entries work the moment they are added.
+#
+# Add 3-5 RU channels that actually cover business failures regularly:
+# @example_ru_channel

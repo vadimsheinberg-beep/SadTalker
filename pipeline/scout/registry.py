@@ -106,6 +106,10 @@ def parse_registry(text: str) -> list[Entry]:
     entries: list[Entry] = []
     for line in text.splitlines():
         stripped = line.strip()
+        # Comments first: the file documents its own accepted URL forms, and a
+        # commented-out example must not become a watched channel.
+        if not stripped or stripped.startswith("#"):
+            continue
         # /channel/UC... URLs carry the id inline; take it without an API call.
         if "youtube.com/channel/" in stripped:
             candidate = stripped.split("youtube.com/channel/", 1)[1]

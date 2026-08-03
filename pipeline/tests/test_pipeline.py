@@ -1000,6 +1000,32 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(entries[0].channel_id, channel_id)
         self.assertTrue(entries[0].resolved)
 
+    def test_commented_out_channel_url_is_not_watched(self):
+        # The shipped registry documents its own accepted URL forms in
+        # comments; those examples must never become watched channels.
+        entries = registry.parse_registry(
+            "#     https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx\n"
+            "UC" + "a" * 22
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].channel_id, "UC" + "a" * 22)
+
+    def test_shipped_example_registry_parses_to_real_channels_only(self):
+        entries = registry.load(Path("pipeline/data/channels.example.txt"))
+        self.assertTrue(entries)
+        for entry in entries:
+            self.assertNotIn("x" * 10, entry.channel_id)
+        self.assertEqual(sum(1 for e in entries if e.resolved), 7)
+        self.assertEqual(sum(1 for e in entries if not e.resolved), 2)
+
+    def test_our_own_channels_are_not_in_the_watch_list(self):
+        # Watching our own channels would rank our back catalogue as trends.
+        text = Path("pipeline/data/channels.example.txt").read_text(encoding="utf-8")
+        entries = registry.parse_registry(text)
+        handles = {e.handle.casefold() for e in entries if e.handle}
+        self.assertNotIn("@tamha4", handles)
+        self.assertNotIn("@tamha2", handles)
+
     def test_comments_and_blanks_are_skipped(self):
         entries = registry.parse_registry("# heading\n\n@one\n@two  # trailing note")
         self.assertEqual([e.handle for e in entries], ["@one", "@two"])
