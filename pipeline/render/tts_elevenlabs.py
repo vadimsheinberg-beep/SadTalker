@@ -18,6 +18,7 @@ import struct
 import urllib.error
 import urllib.request
 import wave
+from importlib import resources
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -84,10 +85,20 @@ class Lexicon:
         RU and EN need genuinely different files, not one shared table: the
         Russian voice reads Cyrillic respellings far more reliably than Latin
         ones, so the same tractate is spelled differently per voice.
+
+        Read through ``importlib.resources`` rather than ``__file__`` so this
+        also works when the package is deployed as a zipapp, where the data
+        files live inside the archive and have no filesystem path.
         """
-        return cls.load(
-            Path(__file__).resolve().parents[1] / "data" / f"lexicon_{language.value}.json"
-        )
+        name = f"lexicon_{language.value}.json"
+        try:
+            text = (
+                resources.files("pipeline.data").joinpath(name).read_text("utf-8")
+            )
+        except (FileNotFoundError, ModuleNotFoundError, AttributeError):
+            return cls()
+        raw = json.loads(text)
+        return cls(raw if isinstance(raw, dict) else raw.get("terms", {}))
 
     def apply(self, text: str) -> str:
         if self._pattern is None:

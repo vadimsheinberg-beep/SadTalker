@@ -261,6 +261,21 @@ rank our own back catalogue as this week's trends. Their own numbers come from
 `scout/youtube_analytics.py`, which needs OAuth rather than an API key because
 the Analytics API only exposes a channel's data to its owner.
 
+### Single-file deployment
+
+The package is stdlib-only, so it ships as one executable file rather than a
+72 MB checkout:
+
+```bash
+python3 pipeline/build_pyz.py -o tzoar-pipeline.pyz   # ~86 KB
+./tzoar-pipeline.pyz registry --doctor --sample 10
+```
+
+Convenient for cron: absolute path, no working directory, nothing to `git pull`.
+The avatar stage is the exception — it shells out to SadTalker's `inference.py`
+and needs the full clone plus checkpoints. Full walkthrough in
+`docs/deploy-server.md`.
+
 Run the tests with no network and no GPU:
 
 ```bash

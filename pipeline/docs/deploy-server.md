@@ -16,7 +16,8 @@ or the monitor.
   so there is no `pip install`, no virtualenv and no lockfile to reconcile with
   whatever the control plane already uses.
 - **Read access** to `/opt/tzoar/deploy/production/channel_registries/`.
-- `git` to fetch the code.
+- A way to get one 86 KB file onto the server — `git`, `scp` or `rsync`. See
+  the three options in step 1; only the first needs GitHub access.
 
 Optional, and only for later stages — `registry --doctor` does not touch them:
 
@@ -39,56 +40,86 @@ and substitute it for `python3` in every command below.
 
 ---
 
-## 1. Get the code
+## 1. Get the code — one file, no repository
 
-The pipeline lives on branch `claude/youtube-bavli-atlas-pipeline-h1qoqu` of the
-SadTalker repository. Clone it somewhere that is *not* inside `deploy/`, so it
-cannot be confused with deployed state:
+The whole repository is 72 MB (140 MB with history) and exists mostly to serve
+the avatar stage. The pipeline itself is 400 KB of pure standard library, so it
+ships as a **single executable file** built with Python's own `zipapp`:
 
 ```bash
-mkdir -p /opt/tzoar/src
-cd /opt/tzoar/src
-git clone -b claude/youtube-bavli-atlas-pipeline-h1qoqu \
+python3 pipeline/build_pyz.py -o tzoar-pipeline.pyz
+```
+
+That produces an ~86 KB file that runs anywhere, needs no unpacking, no
+`PYTHONPATH`, and no working directory:
+
+```bash
+./tzoar-pipeline.pyz registry --doctor --sample 10
+```
+
+Tests and docs are excluded from the archive; the data files (pronunciation
+lexicons) are inside it and read through `importlib.resources`, so they work
+from within the zip.
+
+### Getting that file onto the server
+
+Pick whichever matches how the server is set up.
+
+**A. Build on the server from a shallow clone**, then delete the clone. Cheapest
+if the server can reach GitHub at all:
+
+```bash
+cd /tmp
+git clone --depth 1 -b claude/youtube-bavli-atlas-pipeline-h1qoqu \
     https://github.com/vadimsheinberg-beep/SadTalker.git
-cd SadTalker
+cd SadTalker && python3 pipeline/build_pyz.py -o /opt/tzoar/bin/tzoar-pipeline.pyz
+cd /tmp && rm -rf SadTalker
 ```
 
-Already cloned? Update instead:
+`--depth 1` skips the 69 MB of history. Nothing of the repository survives.
+
+**B. Build locally, copy one file.** If the server should not talk to GitHub at
+all — you already have SSH file access:
 
 ```bash
-cd /opt/tzoar/src/SadTalker
-git fetch origin claude/youtube-bavli-atlas-pipeline-h1qoqu
-git checkout claude/youtube-bavli-atlas-pipeline-h1qoqu
-git pull origin claude/youtube-bavli-atlas-pipeline-h1qoqu
+# on your machine, in the repo
+python3 pipeline/build_pyz.py -o tzoar-pipeline.pyz
+scp tzoar-pipeline.pyz root@84.247.137.69:/opt/tzoar/bin/
 ```
 
-The repository is the full SadTalker tree; only the `pipeline/` package matters
-for this. SadTalker's own model checkpoints are **not** needed for anything in
-this document — they are required only for avatar rendering, much later.
+**C. Copy the package directory** if you would rather see plain files than an
+archive. `rsync` only what runs:
+
+```bash
+rsync -av --exclude=tests --exclude=docs --exclude=__pycache__ \
+    pipeline/ root@84.247.137.69:/opt/tzoar/lib/pipeline/
+```
+
+Then run it with `cd /opt/tzoar/lib && python3 -m pipeline …`.
+
+Updating later is the same operation as installing — rebuild and replace the
+one file. There is no checkout anybody has to remember to `git pull`.
 
 ---
 
 ## 2. Confirm it runs at all
 
-`python -m pipeline` must be run **from the repository root** — that is what
-puts the `pipeline` package on the import path.
-
 ```bash
-cd /opt/tzoar/src/SadTalker
-python3 -m pipeline --help
+/opt/tzoar/bin/tzoar-pipeline.pyz --help
 ```
 
 You should see the subcommand list: `scout, inventory, propose, review, drain,
 daily, registry, build, render, avatar`.
 
-Then run the test suite. It is fully offline — no network, no GPU, no
-registries — so it is a clean answer to "does this interpreter run this code":
+The test suite is not inside the archive — it is a build-time check, not a
+runtime one. To verify the interpreter on a machine that has the source
+(option A before you delete the clone, or your own machine):
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -t .
 ```
 
-Expect `OK` and around 158 tests in a few seconds. If this fails, stop here and
+Expect `OK` and around 164 tests in a few seconds. If this fails, stop here and
 send the output; nothing below will be meaningful.
 
 ---
@@ -96,8 +127,7 @@ send the output; nothing below will be meaningful.
 ## 3. Run the doctor
 
 ```bash
-cd /opt/tzoar/src/SadTalker
-python3 -m pipeline registry --doctor --sample 10
+/opt/tzoar/bin/tzoar-pipeline.pyz registry --doctor --sample 10
 ```
 
 It reads the four registries, parses them, and reports what it found. It is
@@ -106,7 +136,8 @@ It reads the four registries, parses them, and reports what it found. It is
 If your registries are somewhere else:
 
 ```bash
-python3 -m pipeline --registry-dir /path/to/channel_registries registry --doctor --sample 10
+/opt/tzoar/bin/tzoar-pipeline.pyz \
+    --registry-dir /path/to/channel_registries registry --doctor --sample 10
 ```
 
 ### What healthy output looks like
@@ -198,7 +229,7 @@ which writes the four artifacts but stores **no** snapshot, so it changes
 nothing you have to undo:
 
 ```bash
-python3 -m pipeline daily --out-dir /tmp/daily-test --no-save
+/opt/tzoar/bin/tzoar-pipeline.pyz daily --out-dir /tmp/daily-test --no-save
 cat /tmp/daily-test/daily_digest.md
 ```
 
@@ -206,17 +237,49 @@ The first real run establishes the baseline and reports no new videos — there
 is nothing to compare against yet. The second day is the first useful digest:
 
 ```bash
-python3 -m pipeline daily
+/opt/tzoar/bin/tzoar-pipeline.pyz daily
 ```
 
 Defaults: artifacts to `/opt/tzoar/deploy/production/daily/`, snapshots to
 `/opt/tzoar/deploy/production/daily/snapshots/`.
 
-### As a daily timer
+### In crontab
 
-Once you are happy with it, run it after the monitor finishes so it reads fresh
-metrics. Both files, then `systemctl daemon-reload` and
-`systemctl enable --now tzoar-daily.timer`:
+A single self-contained file is exactly what cron wants — an absolute path, no
+working directory, no environment to set up. `crontab -e`:
+
+```cron
+# Tzoar daily digest. Runs after youtube-channel-monitor so it reads fresh
+# metrics — check when that finishes and leave a margin.
+30 7 * * * /opt/tzoar/bin/tzoar-pipeline.pyz daily >> /var/log/tzoar-daily.log 2>&1
+```
+
+Four things cron gets wrong unless you say otherwise:
+
+- **`PATH` is minimal.** The archive's shebang is `/usr/bin/env python3`, which
+  needs `python3` on the path. If cron cannot find it, either set `PATH` at the
+  top of the crontab or call the interpreter explicitly:
+  ```cron
+  30 7 * * * /usr/bin/python3 /opt/tzoar/bin/tzoar-pipeline.pyz daily >> /var/log/tzoar-daily.log 2>&1
+  ```
+  This is the most common reason a crontab entry silently does nothing.
+- **`%` is special in crontab** and must be escaped as `\%`. None of the
+  commands here contain one — just do not add a `date +%F` without escaping it.
+- **Output is mailed unless redirected.** The `>>` above keeps it in a log; the
+  digest itself is a file, so the log is only for errors and the summary line.
+- **The exit code matters.** `daily` returns 1 if no registry could be read.
+  Worth alerting on if you have anything watching logs.
+
+Ordering against the monitor is the one real constraint: if `daily` runs first,
+it diffs yesterday's metrics against yesterday's metrics and reports nothing new.
+Since cron has no dependency ordering, either leave a wide margin or chain them:
+
+```cron
+30 6 * * * /path/to/monitor && /opt/tzoar/bin/tzoar-pipeline.pyz daily >> /var/log/tzoar-daily.log 2>&1
+```
+
+If the monitor is a systemd unit (`youtube-channel-monitor.service`), prefer a
+systemd timer with `After=` instead — that expresses the ordering properly:
 
 ```ini
 # /etc/systemd/system/tzoar-daily.service
@@ -226,8 +289,7 @@ After=youtube-channel-monitor.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/tzoar/src/SadTalker
-ExecStart=/usr/bin/python3 -m pipeline daily
+ExecStart=/opt/tzoar/bin/tzoar-pipeline.pyz daily
 ```
 
 ```ini
@@ -243,11 +305,8 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-History, as with the monitor:
-
-```bash
-journalctl -u tzoar-daily.service
-```
+Then `systemctl daemon-reload && systemctl enable --now tzoar-daily.timer`, and
+history lands with the monitor's: `journalctl -u tzoar-daily.service`.
 
 ---
 
@@ -256,8 +315,7 @@ journalctl -u tzoar-daily.service
 This is where the daily layer meets the script pipeline:
 
 ```bash
-cd /opt/tzoar/src/SadTalker
-python3 -m pipeline build --channel tamha \
+/opt/tzoar/bin/tzoar-pipeline.pyz build --channel tamha \
     --from-signals /opt/tzoar/deploy/production/daily/daily_topic_signals.json \
     --topic <slug-from-the-digest>
 ```
@@ -277,7 +335,7 @@ secrets in place.
 Check inventory readiness at any time:
 
 ```bash
-python3 -m pipeline inventory --verbose
+/opt/tzoar/bin/tzoar-pipeline.pyz inventory --verbose
 ```
 
 ---
@@ -294,4 +352,4 @@ python3 -m pipeline inventory --verbose
 | `review` / `drain` | Telegram approval loop | `telegram.env` |
 | `build` | claim + script + gate | inventory, `claude.env` |
 | `render` | narration, slides, video | `elevenlabs.env`, ffmpeg, rsvg |
-| `avatar` | talking head over slides | SadTalker checkpoints, GPU |
+| `avatar` | talking head over slides | SadTalker checkpoints, GPU — **needs the full clone, not the .pyz** |

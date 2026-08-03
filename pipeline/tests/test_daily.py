@@ -395,5 +395,104 @@ class DomainLabelTests(unittest.TestCase):
             self.assertEqual(topics[0].domain, "ai_science")
 
 
+class ZipappTests(unittest.TestCase):
+    """The single-file deployment must stay runnable.
+
+    Two things silently break a zipapp and nothing else catches them: reading
+    data files through ``__file__`` instead of ``importlib.resources``, and a
+    module that only imports because the repository happens to be the working
+    directory.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        import sys
+
+        from pipeline import build_pyz
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.pyz = build_pyz.build(Path(cls._tmp.name) / "p.pyz")
+        cls.invoke = staticmethod(lambda *args: subprocess.run(
+            [sys.executable, str(cls.pyz), *args],
+            capture_output=True, text=True, cwd=cls._tmp.name,
+        ))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_archive_is_built_and_small(self):
+        size_kb = self.pyz.stat().st_size / 1024
+        self.assertLess(size_kb, 500, "archive should stay far smaller than the repo")
+
+    def test_runs_outside_the_repository(self):
+        result = type(self).invoke("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("daily", result.stdout)
+        self.assertIn("registry", result.stdout)
+
+    def test_doctor_runs_from_the_archive(self):
+        directory = Path(self._tmp.name) / "reg"
+        directory.mkdir(exist_ok=True)
+        (directory / "ai_science_en.json").write_text(
+            json.dumps({"channels": [channel("UC1", [video("v1", "AI result", 90_000)])]}),
+            encoding="utf-8",
+        )
+        result = type(self).invoke(
+            "--registry-dir", str(directory), "registry", "--doctor"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("channels parsed:", result.stdout)
+        self.assertNotIn("WARNING", result.stdout)
+
+    def test_daily_writes_all_four_artifacts_from_the_archive(self):
+        directory = Path(self._tmp.name) / "reg2"
+        directory.mkdir(exist_ok=True)
+        (directory / "ai_science_en.json").write_text(
+            json.dumps({"channels": [channel("UC1", [video("v1", "AI result", 90_000)])]}),
+            encoding="utf-8",
+        )
+        out = Path(self._tmp.name) / "out"
+        result = type(self).invoke(
+            "--registry-dir", str(directory), "daily",
+            "--out-dir", str(out), "--snapshot-dir", str(out / "snap"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in (
+            daily_report.NEW_VIDEOS_FILE,
+            daily_report.TOPIC_SIGNALS_FILE,
+            daily_report.STATUS_CHANGES_FILE,
+            daily_report.DIGEST_FILE,
+        ):
+            self.assertTrue((out / name).exists(), f"{name} missing")
+
+    def test_data_files_are_readable_from_inside_the_archive(self):
+        # Regression: Lexicon read its JSON via __file__, which has no
+        # filesystem path inside a zipapp and silently yielded no terms.
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from pipeline.contracts import Language\n"
+             "from pipeline.render.tts_elevenlabs import Lexicon\n"
+             "print(len(Lexicon.for_language(Language.RU)))"],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": str(self.pyz), "PATH": "/usr/bin:/bin"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(int(result.stdout.strip()), 40)
+
+    def test_tests_and_docs_are_not_shipped(self):
+        import zipfile
+
+        with zipfile.ZipFile(self.pyz) as archive:
+            names = archive.namelist()
+        self.assertFalse([n for n in names if "/tests/" in n], "tests shipped")
+        self.assertFalse([n for n in names if "/docs/" in n], "docs shipped")
+        self.assertTrue([n for n in names if n.endswith("lexicon_ru.json")])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
