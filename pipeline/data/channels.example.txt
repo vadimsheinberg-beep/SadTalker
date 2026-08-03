@@ -1,6 +1,13 @@
-# Watch list for the trend scout.
+# SEED list for the trend scout -- NOT the source of truth.
 #
-# These are channels the scout READS to learn what YouTube is currently
+# The control plane already has a channel registry (one of the nine verified
+# tools). That registry is authoritative. This file exists only because the
+# deployed one was unreachable when the scout was written, and it should be
+# replaced by an adapter that reads the real registry rather than maintained
+# in parallel. Two lists of watched channels that can disagree is worse than
+# either list alone.
+#
+# These are channels the scout READS daily to learn what YouTube is currently
 # promoting in the corporate-collapse domain. Nothing is ever published to
 # them.
 #
