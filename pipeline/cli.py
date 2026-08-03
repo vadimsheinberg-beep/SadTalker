@@ -7,6 +7,7 @@
     python -m pipeline drain                 apply operator replies
     python -m pipeline daily                 snapshot + the four daily artifacts
     python -m pipeline registry --sample 10  verify the registry reader
+    python -m pipeline report --out r.md    one shareable diagnostic
     python -m pipeline build --from-signals daily_topic_signals.json --topic <slug>
     python -m pipeline render --package <f>  narration, deck, video
     python -m pipeline avatar --package <f>  talking head, composited
@@ -26,6 +27,7 @@ from pathlib import Path
 from .atlas import approval_telegram, inventory, theme_proposer
 from .atlas.claim_selector import NoVerifiedClaim, select_claim
 from .atlas.rag_client import RagClient
+from . import diagnostics
 from .config import SETTINGS
 from .contracts import Channel, Package, PublicationBlocked
 from .publish.gate import BlockList, build_description, check_package
@@ -111,6 +113,23 @@ def cmd_registry(args: argparse.Namespace) -> int:
                 f"subs={record.subscribers:<10} baseline={record.baseline_views:<10} "
                 f"videos={len(record.videos):<3} {record.title[:40]}"
             )
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """One diagnostic covering everything needed to unblock the deployment.
+
+    Written to a file rather than only stdout so it can be attached or pushed
+    without a lossy terminal copy-paste.
+    """
+    text = diagnostics.build_report(Path(args.registry_dir))
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(f"written to {out}  ({len(text):,} bytes)")
+    else:
+        print(text)
     return 0
 
 
@@ -469,6 +488,10 @@ def main(argv: list[str] | None = None) -> int:
         help="report without storing today's snapshot (dry run)",
     )
     daily.set_defaults(func=cmd_daily)
+
+    rep = sub.add_parser("report", help="one diagnostic, safe to share")
+    rep.add_argument("--out", default="", help="write to a file instead of stdout")
+    rep.set_defaults(func=cmd_report)
 
     reg = sub.add_parser("registry", help="verify the registry reader")
     reg.add_argument("--sample", type=int, default=5)

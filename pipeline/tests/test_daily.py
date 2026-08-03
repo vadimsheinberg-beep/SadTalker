@@ -496,3 +496,137 @@ class ZipappTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DiagnosticReportTests(unittest.TestCase):
+    """The report is meant to be pasted into chat or pushed to a branch.
+
+    Its one non-negotiable property is that nothing which could not survive
+    that ends up inside it. These tests plant canaries and assert they never
+    appear.
+    """
+
+    CANARIES = {
+        "api_key": "AIzaSyCANARY0000000000000000000000000000",
+        "refresh": "1//03CANARY-refresh-token-value",
+        "anthropic": "sk-ant-CANARY-value",
+        "channel_title": "Canary Channel Title",
+        "video_title": "Canary Video Title",
+    }
+
+    def _tree(self, tmp: Path, field_names: str = "matching") -> tuple[Path, dict]:
+        deploy = tmp / "deploy"
+        (deploy / "secrets").mkdir(parents=True, exist_ok=True)
+        registries = deploy / "production" / "channel_registries"
+        registries.mkdir(parents=True, exist_ok=True)
+
+        (deploy / ".env.ytdata").write_text(
+            f"YT_DATA_API_KEY_1={self.CANARIES['api_key']}\n", encoding="utf-8"
+        )
+        (deploy / ".env.youtube-analytics").write_text(
+            f"YT_ANALYTICS_REFRESH_TOKEN_RU={self.CANARIES['refresh']}\n",
+            encoding="utf-8",
+        )
+        (deploy / "secrets" / "claude.env").write_text(
+            f"ANTHROPIC_API_KEY={self.CANARIES['anthropic']}\n", encoding="utf-8"
+        )
+
+        if field_names == "matching":
+            record = {
+                "channel_id": "UCcanary0000000000000000",
+                "title": self.CANARIES["channel_title"],
+                "subscribers": 123456,
+                "status": "WATCH_CORE",
+                "median_top3": 40000,
+                "last_videos": [
+                    {"video_id": "vcanary", "title": self.CANARIES["video_title"],
+                     "views": 99999, "published_at": NOW.isoformat()}
+                ],
+            }
+        else:
+            record = {
+                "ytChannelId": "UCcanary0000000000000000",
+                "channelTitle": self.CANARIES["channel_title"],
+                "subs_count": 123456,
+                "editorial": "WATCH_CORE",
+                "recent": [
+                    {"vid": "vcanary", "name": self.CANARIES["video_title"],
+                     "plays": 99999, "uploaded": NOW.isoformat()}
+                ],
+            }
+        (registries / "ai_science_en.json").write_text(
+            json.dumps({"channels": [record]}), encoding="utf-8"
+        )
+        return registries, record
+
+    def _report(self, tmp: Path, field_names: str = "matching") -> str:
+        import importlib
+        import os
+
+        registries, _ = self._tree(tmp, field_names)
+        old = dict(os.environ)
+        os.environ["TZOAR_DEPLOY_ROOT"] = str(tmp / "deploy")
+        os.environ["TZOAR_WORKDIR"] = str(tmp / "work")
+        os.environ["AZ_RAG_ENV"] = str(tmp / "deploy" / "az.env")
+        try:
+            from pipeline import config as config_module
+            from pipeline import diagnostics
+
+            importlib.reload(config_module)
+            importlib.reload(diagnostics)
+            return diagnostics.build_report(registries)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+            from pipeline import config as config_module
+            from pipeline import diagnostics
+
+            importlib.reload(config_module)
+            importlib.reload(diagnostics)
+
+    def test_no_credential_value_appears(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            for name in ("api_key", "refresh", "anthropic"):
+                self.assertNotIn(self.CANARIES[name], text, f"{name} leaked")
+
+    def test_not_even_a_prefix_of_a_credential_appears(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            for name in ("api_key", "refresh", "anthropic"):
+                self.assertNotIn(self.CANARIES[name][:12], text, f"{name} prefix leaked")
+
+    def test_channel_and_video_titles_do_not_appear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            self.assertNotIn(self.CANARIES["channel_title"], text)
+            self.assertNotIn(self.CANARIES["video_title"], text)
+
+    def test_credential_presence_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            self.assertIn("YT_DATA_API_KEY_1", text)
+            self.assertIn("set", text)
+            self.assertIn("unset", text)
+
+    def test_field_names_are_reported_so_aliases_can_be_fixed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp), field_names="mismatched")
+            self.assertIn("ytChannelId", text)
+            self.assertIn("subs_count", text)
+            self.assertIn("recent", text)
+            self.assertIn("UNMATCHED", text)
+
+    def test_matching_registry_reports_no_unmatched_core_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            alias_block = text.split("## Alias resolution")[1].split("## Doctor")[0]
+            for field in ("channel_id", "subscribers", "videos", "status"):
+                line = [l for l in alias_block.splitlines() if l.strip().startswith(field)]
+                self.assertTrue(line, f"{field} missing from alias section")
+                self.assertNotIn("UNMATCHED", line[0], f"{field} should have matched")
+
+    def test_file_permissions_are_surfaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._report(Path(tmp))
+            self.assertIn("mode=0o", text)

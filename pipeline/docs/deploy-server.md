@@ -189,23 +189,22 @@ every field is read through a list of plausible names. When none of them match,
 the reader silently sees zeros — and zeros produce a ranking that *looks*
 plausible and means nothing.
 
-Do not work around it. Send me the output of:
+Do not work around it. Run the diagnostic instead — one command that gathers
+everything needed to fix it:
 
 ```bash
-python3 -c "
-import json
-d = json.load(open('/opt/tzoar/deploy/production/channel_registries/ai_science_en.json'))
-print('TOP-LEVEL:', list(d)[:10] if isinstance(d, dict) else f'list[{len(d)}]')
-rec = (d if isinstance(d, list) else d.get('channels') or list(d.values()))[0]
-print('CHANNEL FIELDS:', list(rec))
-for k in list(rec):
-    if isinstance(rec[k], list) and rec[k] and isinstance(rec[k][0], dict):
-        print('VIDEO FIELDS:', k, '->', list(rec[k][0]))
-"
+/opt/tzoar/bin/tzoar-pipeline.pyz report --out /tmp/tzoar-report.md
+cat /tmp/tzoar-report.md
 ```
 
-That prints field *names* only — no subscriber numbers, no ids, nothing
-sensitive — and it is enough for me to correct the alias tables in one pass.
+Paste that file back, or commit it to a branch. It reports the *names* of the
+fields each registry actually uses, which alias tables matched and which did
+not, the environment, and which credentials exist.
+
+**It is built to be shareable.** Credentials are reported as `set` / `unset`
+and their values are never read into it; channel titles, video titles and
+channel ids are never included. Tests plant canary values in every one of those
+places and assert none of them reach the output.
 
 ### If it errors instead
 
@@ -344,6 +343,7 @@ Check inventory readiness at any time:
 
 | command | what it does | needs |
 |---|---|---|
+| `report --out f.md` | one shareable diagnostic | nothing (reports what is missing) |
 | `registry --doctor` | verify the registry reader | registries (read-only) |
 | `daily` | snapshot + the four artifacts | registries |
 | `scout` | ranked topics to stdout | registries |
