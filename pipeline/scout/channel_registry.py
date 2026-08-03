@@ -288,7 +288,9 @@ def load_file(path: Path, profile: str = "") -> list[ChannelRecord]:
 
 
 def load_dir(
-    directory: Path | None = None, files: Iterable[str] = REGISTRY_FILES
+    directory: Path | None = None,
+    files: Iterable[str] = REGISTRY_FILES,
+    problems: list[str] | None = None,
 ) -> list[ChannelRecord]:
     """Load every registry and merge channels that appear in several profiles.
 
@@ -296,14 +298,30 @@ def load_dir(
     means such a channel is read once and contributes one set of signals, not
     two -- otherwise it would count double in the cross-channel agreement that
     decides whether a topic is real.
+
+    One unreadable file does not abort the load: it is appended to ``problems``
+    and the rest are read. A daily job that dies because one profile is empty
+    or was half-written produces no digest at all, which is a worse outcome
+    than a digest missing one profile and saying so. Only a total failure
+    raises.
     """
     directory = Path(directory or REGISTRY_DIR)
     merged: dict[str, ChannelRecord] = {}
+    # Collected regardless of whether the caller wants them: when every file
+    # fails, the reason is the only useful thing left to report.
+    collected: list[str] = []
     for name in files:
         path = directory / name
         if not path.exists():
             continue
-        for record in load_file(path, profile=path.stem):
+        try:
+            loaded = load_file(path, profile=path.stem)
+        except RegistryError as exc:
+            collected.append(str(exc))
+            if problems is not None:
+                problems.append(str(exc))
+            continue
+        for record in loaded:
             existing = merged.get(record.channel_id)
             if existing is None:
                 merged[record.channel_id] = record
@@ -316,8 +334,10 @@ def load_dir(
                     record.profiles = existing.profiles
                     merged[record.channel_id] = record
     if not merged:
+        detail = f" Problems: {'; '.join(collected)}" if collected else ""
         raise RegistryError(
-            f"no registries loaded from {directory}. Expected: {', '.join(files)}"
+            f"no registries loaded from {directory}. "
+            f"Expected: {', '.join(files)}.{detail}"
         )
     return list(merged.values())
 

@@ -143,6 +143,24 @@ class AtlasPolicy:
 
 
 @dataclass(frozen=True)
+class DailyPolicy:
+    """Thresholds for the daily digest.
+
+    These decide what counts as worth a human's attention, so they are tuning
+    knobs rather than constants -- if the digest is too noisy to read every
+    morning, it stops being read, and then nothing downstream matters.
+    """
+
+    spike_ratio: float = 3.0  # video views over its channel's own baseline
+    subscriber_jump_pct: float = 5.0
+    quiet_days: int = 21
+    digest_topics: int = 12
+    digest_videos: int = 25
+    fresh_topic_threshold: float = 0.34  # share of evidence published today
+    keep_snapshots: int = 120
+
+
+@dataclass(frozen=True)
 class RenderPolicy:
     fps: int = 25
     width: int = 1920
@@ -155,6 +173,7 @@ class Settings:
     pacing: PacingPolicy = field(default_factory=PacingPolicy)
     scout: ScoutPolicy = field(default_factory=ScoutPolicy)
     atlas: AtlasPolicy = field(default_factory=AtlasPolicy)
+    daily: DailyPolicy = field(default_factory=DailyPolicy)
     render: RenderPolicy = field(default_factory=RenderPolicy)
     workdir: Path = field(
         default_factory=lambda: Path(

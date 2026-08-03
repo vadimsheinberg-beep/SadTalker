@@ -269,7 +269,72 @@ python3 -m unittest discover -s pipeline/tests -t .
 
 ---
 
-## Domain vocabulary is derived, not chosen
+## The daily layer
+
+`pipeline daily` snapshots the registries and writes four artifacts:
+
+| file | what it holds |
+|---|---|
+| `daily_new_videos.json` | what competitors published since the last run, sorted by outlier ratio |
+| `daily_topic_signals.json` | ranked topics with evidence and a freshness score |
+| `status_changes.json` | editorial and metric movements worth a human look |
+| `daily_digest.md` | the readable summary of the three above |
+
+The monitor keeps only a *current* view — it overwrites metrics each run — so
+the daily layer stores its own compact snapshot per day and diffs against it.
+Snapshots are pruned to `DailyPolicy.keep_snapshots` (120 days).
+
+Some behaviours worth knowing:
+
+- **The first run reports nothing as new.** With no earlier snapshot, every
+  video would look new; 620 channels did not all publish at once. The digest
+  says it is a baseline and tomorrow is the first real report.
+- **Missed uploads are surfaced, not hidden.** The registry keeps ten videos
+  per channel. If *all* ten are new since the last run, more than ten were
+  posted and some are already outside the window — the digest says so rather
+  than silently under-reporting.
+- **Freshness separates news from evergreen.** A topic's freshness is the share
+  of its evidence published today. Without it the digest leads with the same
+  permanently-popular subject every morning. `★` marks topics above
+  `fresh_topic_threshold`.
+- **Quiet channels are chased.** A `WATCH_CORE`/`WATCH_WEEKLY` channel silent
+  for `quiet_days` is reported — usually a signal to re-check the editorial
+  status.
+- **One broken registry does not kill the run.** A daily job that dies because
+  one profile was half-written produces no digest at all, which is worse than a
+  digest missing one profile and saying so. Only total failure raises.
+
+### Writing scripts from the digest
+
+```bash
+python -m pipeline daily
+# read daily_digest.md, pick a slug
+python -m pipeline build --channel tamha \
+    --from-signals /opt/tzoar/deploy/production/daily/daily_topic_signals.json \
+    --topic <slug>
+```
+
+`--from-signals` takes topics from the same ranked file a human read, rather
+than re-deriving a ranking that may have moved since morning. The thing
+reviewed is the thing that gets made.
+
+The gate is unchanged by any of this: a topic with no verified atlas cluster
+behind it produces no video, however well it scored.
+
+### Known limit: cross-language topics only partly link
+
+Topic grouping is keyword-based, so the same subject links across RU and EN
+only when it carries a Latin token:
+
+```
+"GPT-5 и Nvidia: прорыв в агентах"   ∩  "The GPT-5 agent breakthrough…"  → {gpt, nvidia}
+"Сверхпроводник при комнатной…"      ∩  "Room-temperature superconductor…" → {} 
+```
+
+Proper nouns (GPT-5, Nvidia, CERN) cross-link; fully translated concepts do
+not. So "the same story trending on both language sides" is detected for
+named things and missed for described ones. Closing that gap needs
+translation or embeddings at the grouping step — worth doing, not done here.
 
 The brief described the third concept as **corporate collapses**; the deployed
 registries are **ai_science** and **academic_science**. Rather than pick one

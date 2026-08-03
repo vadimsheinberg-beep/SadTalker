@@ -183,12 +183,33 @@ def rank_topics(
                 keywords=_expand_keywords(phrase, evidence),
                 evidence=evidence,
                 score=round(score, 4),
-                domain=policy.domain,
+                domain=_dominant_domain(members, domains, policy.domain),
             )
         )
 
     candidates.sort(key=lambda c: (-c.score, c.slug))
     return _dedupe(candidates)[: policy.max_candidates]
+
+
+def _dominant_domain(
+    members: Sequence[VideoSignal], domains: dict[str, str], fallback: str
+) -> str:
+    """The domain most of a topic's channels belong to.
+
+    Recorded on the candidate so the digest and the signals file report the
+    vocabulary a topic was actually scored against. Reporting the policy
+    default instead would mislabel every registry-sourced topic while the
+    scoring underneath was correct -- the kind of discrepancy that costs an
+    afternoon to notice.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for member in members:
+        domain = domains.get(member.channel_id)
+        if domain:
+            counts[domain] += 1
+    if not counts:
+        return fallback
+    return max(sorted(counts), key=lambda name: counts[name])
 
 
 def slugify(phrase: str) -> str:

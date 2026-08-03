@@ -5,7 +5,9 @@
     python -m pipeline propose  --limit 10   draft theme_names for review
     python -m pipeline review                send the batch to Telegram
     python -m pipeline drain                 apply operator replies
-    python -m pipeline build --topic <slug>  script + gate, no rendering
+    python -m pipeline daily                 snapshot + the four daily artifacts
+    python -m pipeline registry --sample 10  verify the registry reader
+    python -m pipeline build --from-signals daily_topic_signals.json --topic <slug>
     python -m pipeline render --package <f>  narration, deck, video
     python -m pipeline avatar --package <f>  talking head, composited
 
@@ -27,6 +29,8 @@ from .atlas.rag_client import RagClient
 from .config import SETTINGS
 from .contracts import Channel, Package, PublicationBlocked
 from .publish.gate import BlockList, build_description, check_package
+from .daily import report as daily_report
+from .daily import snapshot
 from .scout import channel_registry, registry, trend_scout
 from .scout.youtube_data import YouTubeDataClient
 from .script.beluga import build as build_script
@@ -87,13 +91,18 @@ def cmd_registry(args: argparse.Namespace) -> int:
     first: if it reports zero subscriber counts or zero stored videos, the
     aliases are wrong and any ranking built on them is noise.
     """
+    problems: list[str] = []
     try:
-        records = channel_registry.load_dir(Path(args.registry_dir))
+        records = channel_registry.load_dir(
+            Path(args.registry_dir), problems=problems
+        )
     except channel_registry.RegistryError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     print(channel_registry.describe_registry(records))
+    for problem in problems:
+        print(f"\nPROBLEM: {problem}")
     if args.sample:
         print("\nfirst parsed channels:")
         for record in records[: args.sample]:
@@ -102,6 +111,50 @@ def cmd_registry(args: argparse.Namespace) -> int:
                 f"subs={record.subscribers:<10} baseline={record.baseline_views:<10} "
                 f"videos={len(record.videos):<3} {record.title[:40]}"
             )
+    return 0
+
+
+def cmd_daily(args: argparse.Namespace) -> int:
+    """Snapshot the registries and write the four daily artifacts."""
+    problems: list[str] = []
+    try:
+        records = channel_registry.load_dir(
+            Path(args.registry_dir), problems=problems
+        )
+    except channel_registry.RegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    for problem in problems:
+        print(f"  registry: {problem}", file=sys.stderr)
+
+    snapshot_dir = Path(args.snapshot_dir)
+    current = snapshot.Snapshot.from_records(records)
+    prior = snapshot.previous(snapshot_dir, before=current.day)
+
+    report = daily_report.build_report(records, current, prior)
+    written = daily_report.write_artifacts(report, Path(args.out_dir))
+
+    if not args.no_save:
+        snapshot.save(current, snapshot_dir)
+        snapshot.prune(snapshot_dir, SETTINGS.daily.keep_snapshots)
+
+    if report.baseline_run:
+        print(
+            "First run: baseline snapshot stored, nothing to diff against yet. "
+            "Tomorrow's run is the first real digest."
+        )
+    print(
+        f"{report.channels_seen} channels · {len(report.new_videos)} new videos · "
+        f"{len(report.topics)} topics · {len(report.changes)} changes"
+    )
+    for name, path in written.items():
+        print(f"  {name:<15} {path}")
+    if report.possibly_missed:
+        print(
+            f"  warning: {len(report.possibly_missed)} channels may have uploads "
+            "outside the stored 10-video window",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -227,8 +280,13 @@ def cmd_build(args: argparse.Namespace) -> int:
     store = _store(args)
     channel = Channel(args.channel)
 
-    signals, domains = _signals(args)
-    topics = trend_scout.rank_topics(signals, domains=domains)
+    if args.from_signals:
+        # Write from the ranked list a human actually reviewed in the digest,
+        # not from a fresh ranking that may have moved since this morning.
+        topics = daily_report.load_topic_signals(Path(args.from_signals))
+    else:
+        signals, domains = _signals(args)
+        topics = trend_scout.rank_topics(signals, domains=domains)
     if args.topic:
         topics = [t for t in topics if t.slug == args.topic] or topics
     if not topics:
@@ -397,6 +455,21 @@ def main(argv: list[str] | None = None) -> int:
     drain.add_argument("--approver", default="operator")
     drain.set_defaults(func=cmd_drain)
 
+    daily = sub.add_parser("daily", help="snapshot + the four daily artifacts")
+    daily.add_argument(
+        "--out-dir", default="/opt/tzoar/deploy/production/daily",
+        help="where the four artifacts are written",
+    )
+    daily.add_argument(
+        "--snapshot-dir", default=str(snapshot.SNAPSHOT_DIR),
+        help="registry snapshots used for day-over-day diffs",
+    )
+    daily.add_argument(
+        "--no-save", action="store_true",
+        help="report without storing today's snapshot (dry run)",
+    )
+    daily.set_defaults(func=cmd_daily)
+
     reg = sub.add_parser("registry", help="verify the registry reader")
     reg.add_argument("--sample", type=int, default=5)
     reg.set_defaults(func=cmd_registry)
@@ -404,6 +477,10 @@ def main(argv: list[str] | None = None) -> int:
     build = sub.add_parser("build", help="scout → claim → script → gate")
     build.add_argument("--channel", choices=[c.value for c in Channel], required=True)
     build.add_argument("--topic", default="")
+    build.add_argument(
+        "--from-signals", default="",
+        help="take topics from daily_topic_signals.json instead of re-ranking",
+    )
     build.add_argument("--duration", type=int, default=60)
     build.add_argument("--blocklist", default="")
     build.add_argument("--out", default="")
