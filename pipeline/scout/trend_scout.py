@@ -33,15 +33,44 @@ STOPWORDS: frozenset[str] = frozenset(
 
 _TOKEN_RE = re.compile(r"[^\w]+", re.UNICODE)
 
-# Seed vocabulary for the corporate-collapse concept. Keywords are scored, not
-# filtered on, so a title only needs to touch the domain to be considered.
+# Seed vocabulary per editorial domain. Keywords are scored, not filtered on,
+# so a title only needs to touch the domain to be considered.
+#
+# The deployed registries are ai_science and academic_science (RU and EN),
+# which is a different domain from the corporate-collapse concept the scout was
+# first written against. Both are kept: `ScoutPolicy.domain` selects one, and
+# picking the wrong one does not error -- it quietly flattens every score to
+# the 0.25 floor, which is why `domain_affinity` is worth checking first when a
+# ranking looks like noise.
 DOMAIN_PROFILES: dict[str, tuple[str, ...]] = {
+    "ai_science": (
+        "ai", "artificial intelligence", "llm", "gpt", "neural", "model",
+        "openai", "anthropic", "deepmind", "agent", "robotics", "chip", "gpu",
+        "benchmark", "training", "alignment", "breakthrough", "research",
+        "ии", "искусственный интеллект", "нейросеть", "нейросети", "модель",
+        "обучение", "алгоритм", "робот", "чип", "прорыв", "исследование",
+    ),
+    "academic_science": (
+        "study", "research", "paper", "physics", "biology", "chemistry",
+        "mathematics", "astronomy", "neuroscience", "experiment", "discovery",
+        "theory", "quantum", "evolution", "cosmology", "peer review",
+        "наука", "исследование", "физика", "биология", "химия", "математика",
+        "астрономия", "эксперимент", "открытие", "теория", "квант", "эволюция",
+    ),
     "corporate_collapse": (
         "bankruptcy", "collapse", "fraud", "downfall", "scandal", "lawsuit",
         "layoffs", "shutdown", "delisted", "insolvency", "ponzi", "meltdown",
         "банкротство", "крах", "мошенничество", "провал", "скандал", "иск",
         "увольнения", "закрытие", "убытки", "пирамида", "падение",
     ),
+}
+
+# Which registry file feeds which domain vocabulary.
+REGISTRY_DOMAINS: dict[str, str] = {
+    "ai_science_en": "ai_science",
+    "ai_science_ru": "ai_science",
+    "academic_science_en": "academic_science",
+    "academic_science_ru": "academic_science",
 }
 
 

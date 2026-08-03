@@ -35,7 +35,7 @@ from pipeline.render.deck import build_slides, slide_svg, wrap
 from pipeline.render.tts_elevenlabs import Lexicon
 from pipeline.script import pacing
 from pipeline.script.beluga import ScriptGenerationFailed, assemble, verify_claim_intact
-from pipeline.scout import registry, trend_scout, youtube_analytics
+from pipeline.scout import channel_registry, registry, trend_scout, youtube_analytics
 from pipeline.scout.youtube_data import parse_iso8601_duration, parse_rfc3339
 
 
@@ -1068,6 +1068,213 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(ids), 1)
         self.assertEqual(len(problems), 1)
         self.assertIn("@dead", problems[0])
+
+
+class ChannelRegistryTests(unittest.TestCase):
+    """The deployed registries could not be inspected, so these fix the
+    contract the reader assumes and prove the alias fallbacks work."""
+
+    def _channel(self, channel_id: str, status: str = "WATCH_CORE", **overrides):
+        record = {
+            "channel_id": channel_id,
+            "title": f"Channel {channel_id}",
+            "subscribers": 100_000,
+            "median_top3": 50_000,
+            "status": status,
+            "passes_filter": True,
+            "checked_at": "2026-08-03T06:00:00Z",
+            "last_videos": [
+                {
+                    "video_id": f"{channel_id}-v1",
+                    "title": "New AI model breaks benchmark records",
+                    "views": 400_000,
+                    "published_at": "2026-08-02T10:00:00Z",
+                    "duration_s": 700,
+                },
+                {
+                    "video_id": f"{channel_id}-v2",
+                    "title": "Quiet week in research",
+                    "views": 20_000,
+                    "published_at": "2026-08-01T10:00:00Z",
+                    "duration_s": 500,
+                },
+            ],
+        }
+        record.update(overrides)
+        return record
+
+    def _write(self, tmp: Path, name: str, channels: list) -> Path:
+        path = tmp / name
+        path.write_text(json.dumps({"channels": channels}), encoding="utf-8")
+        return path
+
+    def test_reads_a_registry_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(Path(tmp), "ai_science_en.json", [self._channel("UC1")])
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].subscribers, 100_000)
+            self.assertEqual(records[0].baseline_views, 50_000)
+
+    def test_channel_in_two_profiles_is_merged_not_doubled(self):
+        # 27 of the 620 channels sit in more than one profile. Counting one
+        # twice would fake cross-channel agreement for a topic.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(Path(tmp), "ai_science_en.json", [self._channel("UC1")])
+            self._write(Path(tmp), "academic_science_en.json", [self._channel("UC1")])
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(len(records[0].profiles), 2)
+
+    def test_excluded_channels_are_never_scouted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                Path(tmp),
+                "ai_science_en.json",
+                [
+                    self._channel("UC1", "WATCH_CORE"),
+                    self._channel("UC2", "EXCLUDE_TOPIC"),
+                    self._channel("UC3", "EXCLUDE_QUALITY"),
+                ],
+            )
+            records = channel_registry.load_dir(Path(tmp))
+            scoutable = channel_registry.scoutable(records)
+            self.assertEqual({r.channel_id for r in scoutable}, {"UC1"})
+
+    def test_rights_check_is_watchable_but_not_a_source(self):
+        status = channel_registry.EditorialStatus.RIGHTS_CHECK
+        self.assertFalse(status.excluded)
+        self.assertFalse(status.usable_as_source)
+        self.assertTrue(channel_registry.EditorialStatus.WATCH_CORE.usable_as_source)
+
+    def test_channels_below_the_numeric_filter_are_still_watched(self):
+        # The filter says who is worth imitating, not who is worth watching:
+        # a quiet channel that suddenly spikes is the signal worth having.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                Path(tmp),
+                "ai_science_en.json",
+                [self._channel("UC1", passes_filter=False)],
+            )
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(len(channel_registry.scoutable(records)), 1)
+
+    def test_signals_use_the_registry_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(Path(tmp), "ai_science_en.json", [self._channel("UC1")])
+            signals = channel_registry.signals_from(
+                channel_registry.load_dir(Path(tmp))
+            )
+            self.assertEqual(len(signals), 2)
+            self.assertEqual(signals[0].channel_median_views, 50_000)
+            self.assertAlmostEqual(signals[0].outlier_ratio, 8.0)
+
+    def test_alias_fallback_handles_different_field_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            alt = {
+                "id": "UC9",
+                "channel_name": "Alt shape",
+                "subscriberCount": 5000,
+                "recent_videos": [
+                    {
+                        "videoId": "v9",
+                        "name": "Quantum result replicated",
+                        "viewCount": 9000,
+                        "publishedAt": "2026-08-02T10:00:00Z",
+                    }
+                ],
+                "editorial_status": "WATCH_WEEKLY",
+            }
+            (Path(tmp) / "ai_science_ru.json").write_text(
+                json.dumps(alt and [alt]), encoding="utf-8"
+            )
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(records[0].channel_id, "UC9")
+            self.assertEqual(records[0].subscribers, 5000)
+            self.assertEqual(len(records[0].to_signals()), 1)
+
+    def test_registry_keyed_by_channel_id_is_understood(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = {"UC7": {"title": "Keyed", "subscribers": 10, "status": "REVIEW"}}
+            (Path(tmp) / "ai_science_en.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(records[0].channel_id, "UC7")
+
+    def test_unknown_status_does_not_crash_or_silently_exclude(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                Path(tmp), "ai_science_en.json", [self._channel("UC1", "SOMETHING_NEW")]
+            )
+            records = channel_registry.load_dir(Path(tmp))
+            self.assertEqual(
+                records[0].status, channel_registry.EditorialStatus.UNCLASSIFIED
+            )
+            self.assertEqual(len(channel_registry.scoutable(records)), 1)
+
+    def test_unparseable_shape_names_the_keys_it_saw(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ai_science_en.json").write_text(
+                json.dumps({"unexpected_wrapper": 42}), encoding="utf-8"
+            )
+            with self.assertRaises(channel_registry.RegistryError) as ctx:
+                channel_registry.load_dir(Path(tmp))
+            self.assertIn("unexpected_wrapper", str(ctx.exception))
+
+    def test_doctor_warns_when_aliases_match_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                Path(tmp),
+                "ai_science_en.json",
+                [{"channel_id": "UC1", "totally_unknown_field": 1}],
+            )
+            report = channel_registry.describe_registry(
+                channel_registry.load_dir(Path(tmp))
+            )
+            self.assertIn("WARNING", report)
+            self.assertIn("subscribers", report)
+
+    def test_doctor_reports_status_breakdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                Path(tmp),
+                "ai_science_en.json",
+                [self._channel("UC1", "WATCH_CORE"), self._channel("UC2", "REVIEW")],
+            )
+            report = channel_registry.describe_registry(
+                channel_registry.load_dir(Path(tmp))
+            )
+            self.assertIn("WATCH_CORE", report)
+            self.assertIn("REVIEW", report)
+            self.assertNotIn("WARNING", report)
+
+    def test_missing_directory_is_a_clear_error(self):
+        with self.assertRaises(channel_registry.RegistryError):
+            channel_registry.load_dir(Path("/nonexistent/registries"))
+
+
+class DomainProfileTests(unittest.TestCase):
+    def test_deployed_registry_domains_have_vocabularies(self):
+        for domain in set(trend_scout.REGISTRY_DOMAINS.values()):
+            self.assertIn(domain, trend_scout.DOMAIN_PROFILES)
+            self.assertGreater(len(trend_scout.DOMAIN_PROFILES[domain]), 10)
+
+    def test_each_domain_covers_both_languages(self):
+        for domain, terms in trend_scout.DOMAIN_PROFILES.items():
+            has_cyrillic = any(any("а" <= c <= "я" for c in t) for t in terms)
+            has_latin = any(any("a" <= c <= "z" for c in t) for t in terms)
+            self.assertTrue(has_cyrillic, f"{domain} has no RU terms")
+            self.assertTrue(has_latin, f"{domain} has no EN terms")
+
+    def test_wrong_domain_flattens_scores_rather_than_erroring(self):
+        # Choosing the wrong domain is silent, not fatal -- worth a test so the
+        # symptom (everything at the 0.25 floor) is documented somewhere.
+        ai_title = "New LLM breaks every benchmark"
+        right = trend_scout.domain_affinity(ai_title, "ai_science")
+        wrong = trend_scout.domain_affinity(ai_title, "corporate_collapse")
+        self.assertGreater(right, wrong)
+        self.assertAlmostEqual(wrong, 0.25)
 
 
 class AnalyticsTests(unittest.TestCase):

@@ -27,7 +27,7 @@ from .atlas.rag_client import RagClient
 from .config import SETTINGS
 from .contracts import Channel, Package, PublicationBlocked
 from .publish.gate import BlockList, build_description, check_package
-from .scout import registry, trend_scout
+from .scout import channel_registry, registry, trend_scout
 from .scout.youtube_data import YouTubeDataClient
 from .script.beluga import build as build_script
 
@@ -36,34 +36,74 @@ def _store(args: argparse.Namespace) -> inventory.JsonInventoryStore:
     return inventory.JsonInventoryStore(Path(args.inventory))
 
 
-def _channels(args: argparse.Namespace) -> list[str]:
-    """Resolve the watch list to channel ids.
+def _signals(args: argparse.Namespace) -> list:
+    """Load video signals for the scout.
 
-    The file may hold handles, URLs, or raw ids; handles are resolved once and
-    cached beside it. These are the channels the scout *reads* -- never TAMHA
-    or Iahalom, which are where we publish.
+    Reads the deployed registries rather than calling the Data API. The
+    monitor already stores the last ten videos and the view baseline for all
+    620 channels; re-fetching them would cost ~62,000 quota units a day
+    against the 20,000 two keys provide.
+
+    ``--seed-list`` falls back to the local channel file and live API calls,
+    which is only viable for a handful of channels.
     """
-    path = Path(args.registry)
-    try:
-        entries = registry.load(path)
-    except registry.RegistryError as exc:
-        raise SystemExit(str(exc)) from exc
+    if args.seed_list:
+        path = Path(args.seed_list)
+        try:
+            entries = registry.load(path)
+        except registry.RegistryError as exc:
+            raise SystemExit(str(exc)) from exc
+        client = YouTubeDataClient()
+        channel_ids, problems = registry.resolve(
+            entries, client, registry.HandleCache(path.with_suffix(".resolved.json"))
+        )
+        for problem in problems:
+            print(f"  seed list: {problem}", file=sys.stderr)
+        if not channel_ids:
+            raise SystemExit(f"no usable channels in {path}")
+        if len(channel_ids) > 50:
+            print(
+                f"  warning: {len(channel_ids)} channels via live API will exceed "
+                "Data API quota; use the deployed registries instead",
+                file=sys.stderr,
+            )
+        return client.signals(channel_ids, SETTINGS.scout.lookback_hours)
 
-    channel_ids, problems = registry.resolve(
-        entries,
-        YouTubeDataClient(),
-        registry.HandleCache(path.with_suffix(".resolved.json")),
-    )
-    for problem in problems:
-        print(f"  registry: {problem}", file=sys.stderr)
-    if not channel_ids:
-        raise SystemExit(f"no usable channels in {path}")
-    return channel_ids
+    try:
+        records = channel_registry.load_dir(Path(args.registry_dir))
+    except channel_registry.RegistryError as exc:
+        raise SystemExit(str(exc)) from exc
+    return channel_registry.signals_from(records)
+
+
+def cmd_registry(args: argparse.Namespace) -> int:
+    """Report what the registry reader actually parsed.
+
+    The field names in these files could not be inspected from the development
+    environment, so they are read through alias lists. Run this on the server
+    first: if it reports zero subscriber counts or zero stored videos, the
+    aliases are wrong and any ranking built on them is noise.
+    """
+    try:
+        records = channel_registry.load_dir(Path(args.registry_dir))
+    except channel_registry.RegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(channel_registry.describe_registry(records))
+    if args.sample:
+        print("\nfirst parsed channels:")
+        for record in records[: args.sample]:
+            print(
+                f"  {record.channel_id}  {record.status.value:<16} "
+                f"subs={record.subscribers:<10} baseline={record.baseline_views:<10} "
+                f"videos={len(record.videos):<3} {record.title[:40]}"
+            )
+    return 0
 
 
 def cmd_scout(args: argparse.Namespace) -> int:
-    client = YouTubeDataClient()
-    signals = client.signals(_channels(args), SETTINGS.scout.lookback_hours)
+    signals = _signals(args)
     topics = trend_scout.rank_topics(signals)
     if args.json:
         print(
@@ -184,8 +224,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     store = _store(args)
     channel = Channel(args.channel)
 
-    client = YouTubeDataClient()
-    signals = client.signals(_channels(args), SETTINGS.scout.lookback_hours)
+    signals = _signals(args)
     topics = trend_scout.rank_topics(signals)
     if args.topic:
         topics = [t for t in topics if t.slug == args.topic] or topics
@@ -322,9 +361,14 @@ def main(argv: list[str] | None = None) -> int:
         help="path to the cluster inventory store",
     )
     parser.add_argument(
-        "--registry",
-        default=str(SETTINGS.workdir / "channels.txt"),
-        help="watched YouTube channel ids, one per line",
+        "--registry-dir",
+        default=str(channel_registry.REGISTRY_DIR),
+        help="deployed channel registries (the authoritative watch list)",
+    )
+    parser.add_argument(
+        "--seed-list",
+        default="",
+        help="fall back to a local channel file and live API calls (small lists only)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -349,6 +393,10 @@ def main(argv: list[str] | None = None) -> int:
     drain = sub.add_parser("drain", help="apply operator replies")
     drain.add_argument("--approver", default="operator")
     drain.set_defaults(func=cmd_drain)
+
+    reg = sub.add_parser("registry", help="verify the registry reader")
+    reg.add_argument("--sample", type=int, default=5)
+    reg.set_defaults(func=cmd_registry)
 
     build = sub.add_parser("build", help="scout → claim → script → gate")
     build.add_argument("--channel", choices=[c.value for c in Channel], required=True)

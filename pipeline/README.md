@@ -202,8 +202,50 @@ Also needed on the server:
   is used, which works but does less font shaping.
 - `ffmpeg` / `ffprobe` — narration concatenation, muxing, and measuring beat
   durations.
-- The channel registry at `$TZOAR_WORKDIR/channels.txt` — see below. Start from
-  `pipeline/data/channels.example.txt`.
+### The watch list comes from the deployed registries
+
+`youtube-channel-monitor.service` already maintains the watch list in four
+files, and that is authoritative:
+
+```
+/opt/tzoar/deploy/production/channel_registries/
+├── ai_science_en.json      ├── academic_science_en.json
+└── ai_science_ru.json      └── academic_science_ru.json
+```
+
+647 records, 620 unique channels, 27 appearing in more than one profile. The
+monitor stores per channel: subscribers, last ten videos with view counts, last
+publication date, 30-day activity, best result, median of the top three,
+views-to-subscribers ratio, numeric-filter result, and last check time.
+
+**The scout reads these files and does not call the Data API.** That is not a
+preference. A `search.list` sweep across 620 channels costs ~62,000 quota units
+a day against the 20,000 two keys provide — 3.1x over, failing daily. The
+monitor has already paid for these numbers.
+
+`--seed-list` still exists for the local file (`data/channels.example.txt`) and
+live API calls, and warns above 50 channels. It is for experiments, not
+production.
+
+**Field names are read through alias tables.** The registries were written by a
+tool that could not be inspected from the development environment. Before
+trusting any ranking, run on the server:
+
+```bash
+python -m pipeline registry --doctor --sample 10
+```
+
+If it reports zero subscriber counts or zero stored videos, the aliases in
+`channel_registry.ALIASES` do not match the real files and the ranking is
+noise. Correct them from that output rather than guessing twice.
+
+**Editorial status is honoured.** `EXCLUDE_TOPIC` and `EXCLUDE_QUALITY` are
+never read. `RIGHTS_CHECK` still counts as a trend signal — reading a public
+title tells us what YouTube promotes — but `usable_as_source` is false, so it
+must not become source material until rights are settled. Channels below the
+numeric filter are still watched: the filter says who is worth imitating, not
+who is worth watching, and a quiet channel that suddenly spikes is exactly the
+signal worth having.
 
 ### Two different sets of channels
 
@@ -211,20 +253,13 @@ Confusing these breaks the scout quietly rather than loudly:
 
 | | what it is | where it lives |
 |---|---|---|
-| **Watch list** | channels the scout **reads** to find topics — other people's | `channels.txt` |
+| **Watch list** | channels the scout **reads** to find topics — other people's | the four registries |
 | **Publication targets** | TAMHA + Iahalom, where we **publish** | `contracts.Channel` |
 
 Our own two channels must **not** appear in the watch list — the scout would
 rank our own back catalogue as this week's trends. Their own numbers come from
 `scout/youtube_analytics.py`, which needs OAuth rather than an API key because
 the Analytics API only exposes a channel's data to its owner.
-
-The registry accepts whatever form is convenient to paste — `@handle`, a full
-URL, or a raw `UC…` id — because a handle is what a human actually has when
-looking at a channel page. Handles resolve via `channels.forHandle` (1 quota
-unit against `search`'s 100) and are cached in `channels.resolved.json`. A
-handle that fails to resolve is reported and skipped: one dead channel should
-not stop the scout reading the other twenty.
 
 Run the tests with no network and no GPU:
 
@@ -233,6 +268,22 @@ python3 -m unittest discover -s pipeline/tests -t .
 ```
 
 ---
+
+## Unresolved: which domain the scout is actually scoring
+
+The brief described the third concept as **corporate collapses**. The deployed
+registries are **ai_science** and **academic_science**. Those are different
+subjects, and the scout scores against a domain vocabulary.
+
+Both vocabularies now exist in `trend_scout.DOMAIN_PROFILES`, selected by
+`ScoutPolicy.domain`. Getting it wrong is silent rather than fatal: every title
+falls to the 0.25 affinity floor, velocity and outlier ratio still rank, and
+the output looks like a plausible list that ignores the subject entirely. So if
+a ranking ever looks like noise, check the domain first.
+
+`REGISTRY_DOMAINS` maps each registry file to its vocabulary, which is the
+right structure if the answer turns out to be "per registry" rather than one
+global setting. Someone has to say which is editorially correct.
 
 ## Still open
 
