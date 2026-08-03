@@ -333,6 +333,37 @@ def scoutable(records: Iterable[ChannelRecord]) -> list[ChannelRecord]:
     return [record for record in records if not record.status.excluded]
 
 
+def domain_map(records: Iterable[ChannelRecord]) -> dict[str, str]:
+    """Map each channel to the domain vocabulary of its source registry.
+
+    This removes the need for a global domain setting: a channel from
+    ``ai_science_ru.json`` is scored against AI vocabulary and one from
+    ``academic_science_en.json`` against academic vocabulary, so the
+    wrong-domain failure -- every title flattened to the affinity floor while
+    still producing a plausible-looking ranking -- cannot happen by omission.
+
+    A channel in several profiles takes the domain its profiles agree on;
+    where they disagree the first sorted profile wins, deterministically.
+    """
+    from .trend_scout import REGISTRY_DOMAINS
+
+    mapping: dict[str, str] = {}
+    for record in records:
+        domains = {
+            REGISTRY_DOMAINS[profile]
+            for profile in record.profiles
+            if profile in REGISTRY_DOMAINS
+        }
+        if len(domains) == 1:
+            mapping[record.channel_id] = next(iter(domains))
+        elif domains:
+            for profile in sorted(record.profiles):
+                if profile in REGISTRY_DOMAINS:
+                    mapping[record.channel_id] = REGISTRY_DOMAINS[profile]
+                    break
+    return mapping
+
+
 def signals_from(records: Iterable[ChannelRecord]) -> list[VideoSignal]:
     signals: list[VideoSignal] = []
     for record in scoutable(records):

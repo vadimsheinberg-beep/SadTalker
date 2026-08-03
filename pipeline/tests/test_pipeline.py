@@ -1267,6 +1267,48 @@ class DomainProfileTests(unittest.TestCase):
             self.assertTrue(has_cyrillic, f"{domain} has no RU terms")
             self.assertTrue(has_latin, f"{domain} has no EN terms")
 
+    def test_domain_is_derived_per_channel_from_its_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = {
+                "subscribers": 100_000,
+                "median_top3": 10_000,
+                "status": "WATCH_CORE",
+                "last_videos": [],
+            }
+            (Path(tmp) / "ai_science_en.json").write_text(
+                json.dumps([{**base, "channel_id": "UC_AI"}]), encoding="utf-8"
+            )
+            (Path(tmp) / "academic_science_ru.json").write_text(
+                json.dumps([{**base, "channel_id": "UC_SCI"}]), encoding="utf-8"
+            )
+            mapping = channel_registry.domain_map(
+                channel_registry.load_dir(Path(tmp))
+            )
+            self.assertEqual(mapping["UC_AI"], "ai_science")
+            self.assertEqual(mapping["UC_SCI"], "academic_science")
+
+    def test_per_channel_domain_beats_a_wrong_global_default(self):
+        ai = signal("v1", "UC_AI", "New LLM breaks every benchmark")
+        ai2 = signal("v2", "UC_AI2", "LLM benchmark results replicated")
+        policy = ScoutPolicy(domain="corporate_collapse", min_distinct_channels=2)
+
+        without = trend_scout.rank_topics([ai, ai2], policy)
+        with_map = trend_scout.rank_topics(
+            [ai, ai2], policy, domains={"UC_AI": "ai_science", "UC_AI2": "ai_science"}
+        )
+        self.assertTrue(without and with_map)
+        self.assertGreater(with_map[0].score, without[0].score)
+
+    def test_unmapped_channel_falls_back_to_policy_domain(self):
+        signals = [
+            signal("v1", "UC_X", "Enron collapse explained"),
+            signal("v2", "UC_Y", "The Enron collapse timeline"),
+        ]
+        topics = trend_scout.rank_topics(
+            signals, ScoutPolicy(domain="corporate_collapse"), domains={}
+        )
+        self.assertTrue(topics)
+
     def test_wrong_domain_flattens_scores_rather_than_erroring(self):
         # Choosing the wrong domain is silent, not fatal -- worth a test so the
         # symptom (everything at the 0.25 floor) is documented somewhere.

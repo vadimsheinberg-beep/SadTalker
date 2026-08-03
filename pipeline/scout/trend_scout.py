@@ -130,15 +130,24 @@ def score_signal(signal: VideoSignal, domain: str, policy: ScoutPolicy) -> float
 
 
 def rank_topics(
-    signals: Iterable[VideoSignal], policy: ScoutPolicy | None = None
+    signals: Iterable[VideoSignal],
+    policy: ScoutPolicy | None = None,
+    domains: dict[str, str] | None = None,
 ) -> list[TopicCandidate]:
     """Group signals into keyphrase topics and rank them.
 
     A topic is kept only when independent channels agree on it -- see
     ``ScoutPolicy.min_distinct_channels``. This is what stops the scout from
     turning one publisher's upload schedule into the week's content plan.
+
+    ``domains`` maps channel id to domain vocabulary. Registry-sourced signals
+    supply it from the file each channel came from, so an AI channel is scored
+    against AI vocabulary and an academic one against academic vocabulary with
+    nobody choosing a global setting. Channels absent from the map fall back to
+    ``policy.domain``.
     """
     policy = policy or SETTINGS.scout
+    domains = domains or {}
     eligible = [s for s in signals if s.views >= policy.min_views]
 
     by_phrase: dict[str, list[VideoSignal]] = defaultdict(list)
@@ -151,7 +160,12 @@ def rank_topics(
         channels = {member.channel_id for member in members}
         if len(channels) < policy.min_distinct_channels:
             continue
-        scores = [score_signal(member, policy.domain, policy) for member in members]
+        scores = [
+            score_signal(
+                member, domains.get(member.channel_id, policy.domain), policy
+            )
+            for member in members
+        ]
         # Spread rewards agreement across channels but saturates quickly: three
         # independent channels is strong evidence, ten is not three times better.
         spread = min(1.0, math.log1p(len(channels)) / math.log(5))

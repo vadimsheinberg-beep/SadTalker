@@ -269,21 +269,24 @@ python3 -m unittest discover -s pipeline/tests -t .
 
 ---
 
-## Unresolved: which domain the scout is actually scoring
+## Domain vocabulary is derived, not chosen
 
-The brief described the third concept as **corporate collapses**. The deployed
-registries are **ai_science** and **academic_science**. Those are different
-subjects, and the scout scores against a domain vocabulary.
+The brief described the third concept as **corporate collapses**; the deployed
+registries are **ai_science** and **academic_science**. Rather than pick one
+globally and be silently wrong, each channel is scored against the vocabulary
+of the registry it came from — `channel_registry.domain_map()` reads it off the
+file, `rank_topics(domains=…)` applies it per channel.
 
-Both vocabularies now exist in `trend_scout.DOMAIN_PROFILES`, selected by
-`ScoutPolicy.domain`. Getting it wrong is silent rather than fatal: every title
-falls to the 0.25 affinity floor, velocity and outlier ratio still rank, and
-the output looks like a plausible list that ignores the subject entirely. So if
-a ranking ever looks like noise, check the domain first.
+That matters because the wrong-domain failure is invisible: every title drops
+to the 0.25 affinity floor, velocity and outlier ratio still rank, and the
+output is a plausible-looking list that ignores the subject entirely. Deriving
+the domain means it cannot happen by omission.
 
-`REGISTRY_DOMAINS` maps each registry file to its vocabulary, which is the
-right structure if the answer turns out to be "per registry" rather than one
-global setting. Someone has to say which is editorially correct.
+`ScoutPolicy.domain` remains the fallback for channels outside the registries
+(the `--seed-list` path). `corporate_collapse` vocabulary is kept, so if that
+concept is still live it needs its own registry file and an entry in
+`REGISTRY_DOMAINS` — a question worth settling, but no longer one that blocks
+the scout from running correctly.
 
 ## Still open
 

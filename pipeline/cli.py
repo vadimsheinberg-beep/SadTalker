@@ -36,7 +36,7 @@ def _store(args: argparse.Namespace) -> inventory.JsonInventoryStore:
     return inventory.JsonInventoryStore(Path(args.inventory))
 
 
-def _signals(args: argparse.Namespace) -> list:
+def _signals(args: argparse.Namespace) -> tuple[list, dict[str, str]]:
     """Load video signals for the scout.
 
     Reads the deployed registries rather than calling the Data API. The
@@ -67,13 +67,16 @@ def _signals(args: argparse.Namespace) -> list:
                 "Data API quota; use the deployed registries instead",
                 file=sys.stderr,
             )
-        return client.signals(channel_ids, SETTINGS.scout.lookback_hours)
+        return client.signals(channel_ids, SETTINGS.scout.lookback_hours), {}
 
     try:
         records = channel_registry.load_dir(Path(args.registry_dir))
     except channel_registry.RegistryError as exc:
         raise SystemExit(str(exc)) from exc
-    return channel_registry.signals_from(records)
+    return (
+        channel_registry.signals_from(records),
+        channel_registry.domain_map(records),
+    )
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
@@ -103,8 +106,8 @@ def cmd_registry(args: argparse.Namespace) -> int:
 
 
 def cmd_scout(args: argparse.Namespace) -> int:
-    signals = _signals(args)
-    topics = trend_scout.rank_topics(signals)
+    signals, domains = _signals(args)
+    topics = trend_scout.rank_topics(signals, domains=domains)
     if args.json:
         print(
             json.dumps(
@@ -224,8 +227,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     store = _store(args)
     channel = Channel(args.channel)
 
-    signals = _signals(args)
-    topics = trend_scout.rank_topics(signals)
+    signals, domains = _signals(args)
+    topics = trend_scout.rank_topics(signals, domains=domains)
     if args.topic:
         topics = [t for t in topics if t.slug == args.topic] or topics
     if not topics:
