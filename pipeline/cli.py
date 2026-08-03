@@ -472,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
 
     reg = sub.add_parser("registry", help="verify the registry reader")
     reg.add_argument("--sample", type=int, default=5)
+    reg.add_argument(
+        "--doctor",
+        action="store_true",
+        help="explicit alias for the default report (accepted for clarity)",
+    )
     reg.set_defaults(func=cmd_registry)
 
     build = sub.add_parser("build", help="scout → claim → script → gate")
