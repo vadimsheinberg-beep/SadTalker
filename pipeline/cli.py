@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .atlas import approval_telegram, inventory, theme_proposer
 from .atlas.claim_selector import NoVerifiedClaim, select_claim
+from .atlas import sections as sections_mod
 from .atlas.rag_client import RagClient
 from . import diagnostics
 from .config import SETTINGS
@@ -212,6 +213,12 @@ def cmd_scout(args: argparse.Namespace) -> int:
 
 def cmd_inventory(args: argparse.Namespace) -> int:
     store = _store(args)
+    if args.import_from:
+        payload = json.loads(Path(args.import_from).read_text(encoding="utf-8"))
+        count, problems = inventory.import_clusters(store, payload)
+        for problem in problems[:20]:
+            print(f"  import: {problem}", file=sys.stderr)
+        print(f"imported {count} clusters (all as draft — import never verifies)\n")
     print(approval_telegram.progress(store))
     blocked = [
         (cluster, cluster.blocking_reasons())
@@ -235,19 +242,33 @@ def cmd_inventory(args: argparse.Namespace) -> int:
 
 def cmd_propose(args: argparse.Namespace) -> int:
     store = _store(args)
-    rag = RagClient()
+
+    inline = None
+    if args.sections:
+        payload = json.loads(Path(args.sections).read_text(encoding="utf-8"))
+        rows = payload if isinstance(payload, list) else payload.get("sections", [])
+        inline = sections_mod.InlineSectionSource.from_records(rows)
+        print(f"inline sections loaded: {len(inline.texts)}")
+    rag_source = sections_mod.RagSectionSource(RagClient())
+
     drafted: list[theme_proposer.Proposal] = []
+    failures = 0
     for cluster in theme_proposer.pending(store)[: args.limit]:
-        sections = [
-            theme_proposer.SectionText.from_hit(hit)
-            for hit in rag.search(" ".join(cluster.section_ids[:8]), top_k=12)
-            if hit.section_id in set(cluster.section_ids)
-        ]
         try:
-            proposal = theme_proposer.propose(cluster, sections)
-        except theme_proposer.ProposalRejected as exc:
-            print(f"  skip {cluster.cluster_id}: {exc}", file=sys.stderr)
+            texts, origin = sections_mod.resolve(
+                cluster.section_ids, inline, rag_source
+            )
+        except sections_mod.SectionsUnavailable as exc:
+            failures += 1
+            print(f"  no sections for {cluster.cluster_id}: {exc}", file=sys.stderr)
             continue
+        try:
+            proposal = theme_proposer.propose(cluster, texts)
+        except theme_proposer.ProposalRejected as exc:
+            failures += 1
+            print(f"  rejected {cluster.cluster_id}: {exc}", file=sys.stderr)
+            continue
+        _ = origin
         theme_proposer.stage(store, proposal)
         drafted.append(proposal)
         print(f"  drafted {cluster.cluster_id}: {proposal.theme_name or '(incoherent)'}")
@@ -257,6 +278,13 @@ def cmd_propose(args: argparse.Namespace) -> int:
             theme_proposer.dump_proposals(drafted), encoding="utf-8"
         )
     print(f"\n{len(drafted)} proposals staged as 'proposed'. None are verified.")
+    if failures:
+        print(
+            f"{failures} clusters produced nothing — see the reasons above. "
+            "Zero drafts with many failures usually means the section lookup "
+            "is not returning the cluster's own text.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -458,12 +486,20 @@ def main(argv: list[str] | None = None) -> int:
 
     inv = sub.add_parser("inventory", help="inventory readiness report")
     inv.add_argument("--verbose", action="store_true")
+    inv.add_argument(
+        "--import-from", dest="import_from", default="",
+        help="load clusters from an atlas export (JSON); never marks verified",
+    )
     inv.add_argument("--limit", type=int, default=30)
     inv.set_defaults(func=cmd_inventory)
 
     propose = sub.add_parser("propose", help="draft theme_names for review")
     propose.add_argument("--limit", type=int, default=10)
     propose.add_argument("--out", default="")
+    propose.add_argument(
+        "--sections", default="",
+        help="JSON with section texts, preferred over the RAG lookup",
+    )
     propose.set_defaults(func=cmd_propose)
 
     review = sub.add_parser("review", help="send proposals to Telegram")

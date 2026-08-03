@@ -1449,3 +1449,161 @@ class RasterizeIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class SectionSourceTests(unittest.TestCase):
+    """Retrieval must be by id.
+
+    The original code used the section ids as a semantic search *query*, so
+    unrelated passages came back, the id filter dropped them, and every cluster
+    was skipped with "no section texts" — a silent no-op that looked like a
+    successful run.
+    """
+
+    def setUp(self):
+        from pipeline.atlas import sections
+
+        self.sections = sections
+
+    def test_inline_source_returns_the_requested_sections(self):
+        source = self.sections.InlineSectionSource.from_records(
+            [
+                {"section_id": "s1", "text": "first", "tractate": "T", "folio": "1a"},
+                {"section_id": "s2", "text": "second"},
+            ]
+        )
+        found = source.fetch(["s1", "s2"])
+        self.assertEqual([s.section_id for s in found], ["s1", "s2"])
+        self.assertEqual(found[0].tractate, "T")
+
+    def test_inline_source_raises_rather_than_returning_empty(self):
+        source = self.sections.InlineSectionSource.from_records(
+            [{"section_id": "s1", "text": "first"}]
+        )
+        with self.assertRaises(self.sections.SectionsUnavailable):
+            source.fetch(["nope"])
+
+    def test_rag_source_refuses_when_nothing_matches_the_ids(self):
+        class WrongClient:
+            def fetch_by_ids(self, ids, collection=None):
+                # What semantic search would return: plausible, but not ours.
+                return [RagHit(section_id="other", score=0.9, text="unrelated")]
+
+        source = self.sections.RagSectionSource(WrongClient())
+        with self.assertRaises(self.sections.SectionsUnavailable) as ctx:
+            source.fetch(["s1"])
+        self.assertIn("none matched", str(ctx.exception))
+        self.assertIn("do not fall back", str(ctx.exception))
+
+    def test_rag_source_returns_matching_sections(self):
+        class GoodClient:
+            def fetch_by_ids(self, ids, collection=None):
+                return [RagHit(section_id=i, score=1.0, text=f"text {i}") for i in ids]
+
+        found = self.sections.RagSectionSource(GoodClient()).fetch(["s1", "s2"])
+        self.assertEqual([s.section_id for s in found], ["s1", "s2"])
+
+    def test_empty_id_list_is_an_error_not_an_empty_result(self):
+        class AnyClient:
+            def fetch_by_ids(self, ids, collection=None):
+                return []
+
+        with self.assertRaises(self.sections.SectionsUnavailable):
+            self.sections.RagSectionSource(AnyClient()).fetch([])
+
+    def test_resolve_prefers_inline_and_falls_back_to_rag(self):
+        class GoodClient:
+            def fetch_by_ids(self, ids, collection=None):
+                return [RagHit(section_id=i, score=1.0, text="from rag") for i in ids]
+
+        inline = self.sections.InlineSectionSource.from_records(
+            [{"section_id": "s1", "text": "from inline"}]
+        )
+        rag = self.sections.RagSectionSource(GoodClient())
+
+        texts, origin = self.sections.resolve(["s1"], inline, rag)
+        self.assertEqual(origin, "inline")
+        self.assertEqual(texts[0].text, "from inline")
+
+        texts, origin = self.sections.resolve(["s9"], inline, rag)
+        self.assertEqual(origin, "rag")
+
+    def test_resolve_reports_every_source_it_tried(self):
+        with self.assertRaises(self.sections.SectionsUnavailable) as ctx:
+            self.sections.resolve(["s1"], None, None)
+        self.assertIn("no section source", str(ctx.exception))
+
+
+class InventoryImportTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = inventory.JsonInventoryStore(Path(self.dir.name) / "inv.json")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_imports_a_list_of_clusters(self):
+        count, problems = inventory.import_clusters(
+            self.store,
+            [{"cluster_id": "c1", "section_ids": ["s1", "s2"]},
+             {"cluster_id": "c2", "section_ids": ["s3"]}],
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(self.store.get("c1").section_ids), 2)
+
+    def test_import_never_marks_anything_verified(self):
+        # Even if the export claims approval, a human must still pass it
+        # through approve(), which re-checks completeness.
+        inventory.import_clusters(
+            self.store,
+            [{"cluster_id": "c1", "section_ids": ["s1"], "status": "verified",
+              "theme_name": "claimed", "text_ru": "р", "text_en": "e"}],
+        )
+        self.assertEqual(self.store.get("c1").status, ClusterStatus.DRAFT)
+        self.assertEqual(inventory.verified_count(self.store), 0)
+
+    def test_alias_field_names_are_understood(self):
+        count, _ = inventory.import_clusters(
+            self.store, {"clusters": [{"id": "c9", "members": ["s1"], "theme": "x"}]}
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(self.store.get("c9").theme_name, "x")
+
+    def test_object_keyed_by_cluster_id_is_understood(self):
+        count, _ = inventory.import_clusters(
+            self.store, {"c7": {"section_ids": ["s1"]}}
+        )
+        self.assertEqual(count, 1)
+        self.assertIsNotNone(self.store.get("c7"))
+
+    def test_records_without_an_id_are_reported_not_silently_dropped(self):
+        count, problems = inventory.import_clusters(
+            self.store, [{"section_ids": ["s1"]}]
+        )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(problems), 1)
+
+    def test_missing_section_ids_are_reported(self):
+        _, problems = inventory.import_clusters(self.store, [{"cluster_id": "c1"}])
+        self.assertTrue(any("no section ids" in p for p in problems))
+
+    def test_reimport_does_not_undo_an_approval(self):
+        cluster = inventory.Cluster(
+            cluster_id="c1", section_ids=["s1"], theme_name="t",
+            text_ru="р", text_en="e",
+            sources=[{"section_id": "s1", "tractate": "T", "folio": "1a", "quote": "q"}],
+        )
+        self.store.save(cluster)
+        inventory.approve(self.store, "c1", "expert")
+
+        inventory.import_clusters(
+            self.store, [{"cluster_id": "c1", "section_ids": ["s1", "s2"]}]
+        )
+        refreshed = self.store.get("c1")
+        self.assertTrue(refreshed.verified, "an import must not undo human approval")
+        self.assertEqual(refreshed.section_ids, ["s1", "s2"])
+
+    def test_unsupported_payload_type_raises(self):
+        with self.assertRaises(ValueError):
+            inventory.import_clusters(self.store, "not a cluster export")
